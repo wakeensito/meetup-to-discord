@@ -232,8 +232,8 @@ def role_mention(role_id: str | None) -> str | None:
     return f"<@&{role_id}>" if role_id else None
 
 
-def _lead(mention: str | None, first_line: str) -> str:
-    return f"{mention} {first_line}" if mention else first_line
+def _trail(line: str, mention: str | None) -> str:
+    return f"{line} {mention}" if mention else line
 
 
 def _cap(text: str) -> str:
@@ -245,10 +245,10 @@ def format_announcement(ev: Event, location: str | None, mention: str | None = N
     if ev.end:
         when += f"–{_clock(ev.end)}"
     when += " ET"
-    lines = [_lead(mention, "📣 **New event is up on Meetup!**"), "", f"**{ev.title}**", when]
+    lines = ["📣 **New event is up on Meetup!**", "", f"**{ev.title}**", when]
     if location:
         lines.append(f"📍 {location}")
-    lines += [f"🔗 {ev.url}", "", CHECKLIST]
+    lines += [f"🔗 {ev.url}", "", _trail(CHECKLIST, mention)]
     return _cap("\n".join(lines))
 
 
@@ -257,10 +257,12 @@ def format_reminder(ev: Event, kind: str, location: str | None, mention: str | N
         first = f"📣 **Today!** {ev.title} starts at {_clock(ev.start)} ET"
     else:
         first = f"⏰ **Reminder:** {ev.title} is {_date_words(ev.start)} at {_clock(ev.start)} ET"
-    lines = [_lead(mention, first)]
+    lines = [first]
     if location:
         lines.append(f"📍 {location}")
     lines.append(f"🔗 {ev.url}")
+    if mention:
+        lines.append(mention)
     return _cap("\n".join(lines))
 
 

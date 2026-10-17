@@ -24,7 +24,7 @@ short reminder 3 days before and on the morning of the event.
 3. **Seed the state** so old events are not re-announced. Either commit a seeded file locally
    (`python3 meetup_to_discord.py --seed`, then commit `seen_events.json`), or run the
    "Poll Meetup" workflow once from the Actions tab with the **seed** box checked.
-4. **Optional: @mention a role** (for example the E-board role) at the top of every post. Get
+4. **Optional: @mention a role** (for example the E-board role) at the end of every post. Get
    the role ID in Discord (Settings → Advanced → Developer Mode on, then Server Settings →
    Roles → ⋯ → Copy Role ID) and store it as a repo variable:
    ```sh

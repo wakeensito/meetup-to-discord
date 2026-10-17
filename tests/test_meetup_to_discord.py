@@ -139,14 +139,16 @@ class FormatTests(unittest.TestCase):
         self.assertIn("3:00 PM ET", text)
         self.assertIn("📍 FIU · Room: INV1 - 201", text)
 
-    def test_announcement_mentions_role_on_first_line_when_given(self):
+    def test_announcement_mentions_role_at_the_end_of_the_claim_line(self):
         text = m.format_announcement(sample_event(), None, mention="<@&42>")
-        self.assertTrue(text.startswith("<@&42> 📣 **New event is up on Meetup!**\n"))
+        self.assertTrue(text.startswith("📣 **New event is up on Meetup!**\n"))
+        self.assertTrue(text.endswith("Claim an item by replying with the task + your name! <@&42>"))
 
-    def test_reminders_mention_role_on_first_line_when_given(self):
+    def test_reminders_mention_role_as_the_last_line(self):
         for kind in ("remind_3d", "remind_day_of"):
             text = m.format_reminder(sample_event(), kind, None, mention="<@&42>")
-            self.assertTrue(text.startswith("<@&42> "), text)
+            self.assertTrue(text.endswith(f"🔗 {EVENT_URL}\n<@&42>"), text)
+            self.assertFalse(text.startswith("<@&42>"), text)
 
     def test_no_mention_by_default(self):
         self.assertNotIn("<@&", m.format_announcement(sample_event(), None))
@@ -407,7 +409,7 @@ class RunFlowTests(unittest.TestCase):
         self.go(now=et(2026, 10, 22, 8, 5), mention_role_id="42")
         self.assertEqual(len(self.posted), 2)
         for text in self.posted:
-            self.assertTrue(text.startswith("<@&42> "), text)
+            self.assertTrue(text.endswith("<@&42>"), text)
 
     def test_heartbeat_written_when_idle_and_stale(self):
         self.go(seed=True)
