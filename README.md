@@ -12,6 +12,43 @@ short reminder 3 days before and on the morning of the event.
 - **Safe:** an event is only marked as posted after Discord returns 2xx. Feed or webhook
   failures exit non-zero and are retried on the next poll.
 
+## How it works
+
+```mermaid
+flowchart LR
+    cron(["GitHub Actions cron<br/>every 15 min"]) --> script
+
+    subgraph job["poll.yml (ubuntu-latest, Python stdlib)"]
+        script["meetup_to_discord.py"]
+        state[("seen_events.json")]
+        script -- "read / write" --> state
+    end
+
+    meetup["Meetup iCal feed<br/>/events/ical/"] -- "events: id, title,<br/>start, end, description" --> script
+    page["Meetup event page<br/>(schema.org JSON-LD)"] -. "venue name,<br/>new events only" .-> script
+    script -- "webhook POST<br/>announce / 3-day / day-of" --> discord["Discord channel"]
+    state -- "git commit + push<br/>[skip ci]" --> repo[("repo main")]
+
+    secret[/"DISCORD_WEBHOOK_URL (secret)<br/>DISCORD_MENTION_ROLE_ID (var)"/] --> script
+```
+
+Each run is one decision per event:
+
+```mermaid
+flowchart TD
+    ev["event from feed"] --> known{"in seen_events.json<br/>and announced?"}
+    known -- no --> announce["post announcement<br/>+ checklist"] --> mark["mark announced;<br/>pre-mark any reminder<br/>window already open"]
+    known -- yes --> dayof{"event day, ≥ 8 AM ET,<br/>not yet reminded?"}
+    dayof -- yes --> post2["post day-of reminder"] --> mark2["mark day-of + 3-day done"]
+    dayof -- no --> three{"≥ 8 AM ET three days<br/>before, not yet reminded?"}
+    three -- yes --> post3["post 3-day reminder"] --> mark3["mark 3-day done"]
+    three -- no --> idle["nothing to post"]
+    mark & mark2 & mark3 --> save["save state only after<br/>Discord returned 2xx"]
+```
+
+If Discord or the feed fails, nothing is marked and the run exits non-zero; the next poll
+retries. Entries for events gone from the feed are pruned 90 days after they started.
+
 ## Setup (one time)
 
 1. **Create the Discord webhook.** In Discord: the target channel → Edit Channel → Integrations
