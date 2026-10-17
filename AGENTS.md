@@ -1,7 +1,8 @@
 # Agent notes: meetup-to-discord
 
 Single-purpose bot: new Meetup event → one Discord message with a task checklist, then a
-reminder 3 days out and the morning of. Zero AWS, zero dependencies.
+reminder 3 days out, one the morning of, and a post-event checklist the morning after.
+Zero AWS, zero dependencies.
 
 ## Resume here
 - Source of truth for behavior: `meetup_to_discord.py` (one file) and `tests/` (unittest, stdlib).
@@ -13,7 +14,9 @@ reminder 3 days out and the morning of. Zero AWS, zero dependencies.
   **Do not enable branch protection on main**; the Actions token cannot push through it. If
   protection is ever wanted, move the state file to an unprotected `state` branch.
 - Reminder windows live in `decide_actions` / `apply_action`. Day-of opens at 8:00 AM ET and takes
-  precedence over a missed 3-day reminder.
+  precedence over a missed 3-day reminder. The post-event recap is driven by **saved state**, not
+  the feed (Meetup drops past events), so `url` and `posted_recap` must be in every entry;
+  `run()` backfills them for older entries.
 - A weekly heartbeat commit (`_last_checked`) keeps the repo "active" so GitHub does not disable
   the schedule after 60 days of inactivity.
 

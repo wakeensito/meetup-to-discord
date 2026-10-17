@@ -34,6 +34,7 @@ USER_AGENT = (
 DISCORD_LIMIT = 2000
 REMIND_3D = timedelta(days=3)
 DAY_OF_HOUR = 8
+RECAP_CLOSES_AFTER = timedelta(days=7)
 PRUNE_AFTER = timedelta(days=90)
 HEARTBEAT_EVERY = timedelta(days=7)
 HEARTBEAT_KEY = "_last_checked"
@@ -53,6 +54,20 @@ CHECKLIST = """**Marketing & Outreach:**
 - [ ] Workshop slide deck — complete presentation deck
 - [ ] Hands-on materials — build & test GitHub lab repo and step-by-step documentation
 - [ ] Dry run — complete rehearsal 1 week prior to the workshop
+
+Claim an item by replying with the task + your name!"""
+
+
+RECAP_CHECKLIST = """**Within 24 hours:**
+- [ ] Discord — thank-you announcement with the feedback survey link
+- [ ] Photos — upload to the shared drive and post a few here
+- [ ] Slides — post the workshop PowerPoint / PDF in Discord
+
+**Within the week:**
+- [ ] Recap — short write-up (what we covered, turnout, what's next) posted in Discord
+- [ ] LinkedIn — recap post with photos from the group page
+- [ ] Instagram — recap post with photos
+- [ ] Lab repo — confirm the GitHub lab repo and docs are public and linked
 
 Claim an item by replying with the task + your name!"""
 
@@ -81,6 +96,10 @@ def fetch(url: str, timeout: int = 20) -> str:
 
 def feed_url(group: str) -> str:
     return f"https://www.meetup.com/{group}/events/ical/"
+
+
+def event_url(group: str, event_id: str) -> str:
+    return f"https://www.meetup.com/{group}/events/{event_id}/"
 
 
 # ---------------------------------------------------------------- iCal parsing
@@ -266,6 +285,12 @@ def format_reminder(ev: Event, kind: str, location: str | None, mention: str | N
     return _cap("\n".join(lines))
 
 
+def format_recap(ev: Event, mention: str | None = None) -> str:
+    lines = [f"✅ **{ev.title} is a wrap! Post-event checklist**", f"🔗 {ev.url}", "",
+             _trail(RECAP_CHECKLIST, mention)]
+    return _cap("\n".join(lines))
+
+
 # ---------------------------------------------------------------- Discord
 
 def post_discord(webhook_url: str, content: str, retries: int = 2,
@@ -337,7 +362,26 @@ def _in_day_of_window(start: datetime, now: datetime) -> bool:
     return _day_of_open(start) <= now < start
 
 
-def decide_actions(events: Iterable[Event], state: dict, now: datetime) -> list[tuple[Event, str]]:
+def _recap_open(start: datetime) -> datetime:
+    """8:00 AM ET the morning after the event day."""
+    return _morning_of(start + timedelta(days=1))
+
+
+def _in_recap_window(start: datetime, now: datetime) -> bool:
+    return _recap_open(start) <= now < start + RECAP_CLOSES_AFTER
+
+
+def _event_from_state(event_id: str, entry: dict, group: str) -> Event | None:
+    try:
+        start = datetime.fromisoformat(entry["start"]).astimezone(ET)
+    except (KeyError, TypeError, ValueError):
+        return None
+    return Event(id=event_id, title=str(entry.get("title") or "Event"), start=start, end=None,
+                 url=entry.get("url") or event_url(group, event_id), description="")
+
+
+def decide_actions(events: Iterable[Event], state: dict, now: datetime,
+                   group: str = DEFAULT_GROUP) -> list[tuple[Event, str]]:
     actions: list[tuple[Event, str]] = []
     for ev in events:
         entry = state.get(ev.id)
@@ -347,6 +391,15 @@ def decide_actions(events: Iterable[Event], state: dict, now: datetime) -> list[
             actions.append((ev, "remind_day_of"))
         elif not entry.get("reminded_3d") and _in_3d_window(ev.start, now):
             actions.append((ev, "remind_3d"))
+    # Past events fall out of the feed, so the recap is driven by saved state.
+    for event_id, entry in state.items():
+        if event_id.startswith("_") or not isinstance(entry, dict):
+            continue
+        if not entry.get("announced") or entry.get("posted_recap"):
+            continue
+        ev = _event_from_state(event_id, entry, group)
+        if ev and _in_recap_window(ev.start, now):
+            actions.append((ev, "post_event"))
     return actions
 
 
@@ -354,6 +407,9 @@ def apply_action(state: dict, ev: Event, kind: str, now: datetime) -> None:
     entry = state.setdefault(ev.id, {})
     entry["title"] = ev.title
     entry["start"] = ev.start.isoformat()
+    if ev.url:
+        entry["url"] = ev.url
+    entry.setdefault("posted_recap", False)
     if kind == "announce":
         entry["announced"] = True
         entry["reminded_3d"] = entry.get("reminded_3d", False) or now >= _3d_open(ev.start)
@@ -363,6 +419,8 @@ def apply_action(state: dict, ev: Event, kind: str, now: datetime) -> None:
         entry["reminded_3d"] = True
     elif kind == "remind_3d":
         entry["reminded_3d"] = True
+    elif kind == "post_event":
+        entry["posted_recap"] = True
     else:
         raise ValueError(kind)
 
@@ -395,29 +453,39 @@ def touch_heartbeat(state: dict, now: datetime) -> bool:
 def run(events: list[Event], state_path: Path, now: datetime, poster: Callable[[str], None],
         *, seed: bool = False, dry_run: bool = False,
         venue_lookup: Callable[[str], str | None] = fetch_venue,
-        mention_role_id: str | None = None) -> int:
+        mention_role_id: str | None = None, group: str = DEFAULT_GROUP) -> int:
     state = load_state(state_path)
     mention = role_mention(mention_role_id)
     feed_ids = {ev.id for ev in events}
 
+    # Backfill fields for entries written by older versions (url, posted_recap).
+    for ev in events:
+        entry = state.get(ev.id)
+        if isinstance(entry, dict):
+            entry.setdefault("url", ev.url)
+            entry.setdefault("posted_recap", False)
+
     if seed:
         for ev in events:
             if ev.id not in state:
-                entry = {"announced": True, "reminded_3d": False, "reminded_day_of": False}
-                state[ev.id] = entry
-                entry["title"], entry["start"] = ev.title, ev.start.isoformat()
+                state[ev.id] = {"announced": True, "reminded_3d": False, "reminded_day_of": False,
+                                "posted_recap": False, "title": ev.title,
+                                "start": ev.start.isoformat(), "url": ev.url}
         touch_heartbeat(state, now)
         if not dry_run:
             save_state(state_path, state)
         print(f"seeded {len(events)} event(s); nothing posted")
         return 0
 
-    actions = decide_actions(events, state, now)
+    actions = decide_actions(events, state, now, group)
     failed = 0
     for ev, kind in actions:
-        location = resolve_location(ev, venue_lookup)
-        content = format_announcement(ev, location, mention) if kind == "announce" \
-            else format_reminder(ev, kind, location, mention)
+        if kind == "post_event":
+            content = format_recap(ev, mention)
+        else:
+            location = resolve_location(ev, venue_lookup)
+            content = format_announcement(ev, location, mention) if kind == "announce" \
+                else format_reminder(ev, kind, location, mention)
         if dry_run:
             print(f"--- would post [{kind}] for {ev.id} ({len(content)} chars) ---\n{content}\n")
             continue
@@ -483,7 +551,7 @@ def main(argv: list[str] | None = None) -> int:
     poster = (lambda content: post_discord(webhook, content, role_id=role_id)) if webhook \
         else (lambda c: None)
     return run(events, Path(args.state), parse_now(args.now), poster,
-               seed=args.seed, dry_run=args.dry_run, mention_role_id=role_id)
+               seed=args.seed, dry_run=args.dry_run, mention_role_id=role_id, group=args.group)
 
 
 if __name__ == "__main__":

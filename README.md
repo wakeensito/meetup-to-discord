@@ -2,7 +2,8 @@
 
 When a new event is published to the [AWS SBG @ FIU Meetup group](https://www.meetup.com/aws-sbg-at-florida-international-university/),
 post one Discord message with the event details and the team task checklist. Then post a
-short reminder 3 days before and on the morning of the event.
+short reminder 3 days before, another on the morning of the event, and a post-event checklist
+(survey announcement, photos, slides, recap) the morning after.
 
 - **Runs on GitHub Actions** every 15 minutes. No servers, no AWS.
 - **Python 3.11+, standard library only.** One file: `meetup_to_discord.py`.
@@ -49,6 +50,49 @@ flowchart TD
 If Discord or the feed fails, nothing is marked and the run exits non-zero; the next poll
 retries. Entries for events gone from the feed are pruned 90 days after they started.
 
+## How it works
+
+```mermaid
+flowchart LR
+    cron(["GitHub Actions cron<br/>every 15 min"]) --> script
+
+    subgraph job["poll.yml · ubuntu-latest · Python stdlib"]
+        script["meetup_to_discord.py"]
+        state[("seen_events.json")]
+        script -- "read / write" --> state
+    end
+
+    meetup["Meetup iCal feed<br/>/events/ical/"] -- "upcoming events:<br/>id, title, start, end, description" --> script
+    page["Meetup event page<br/>(schema.org JSON-LD)"] -. "venue name,<br/>new events only" .-> script
+    config[/"DISCORD_WEBHOOK_URL (secret)<br/>DISCORD_MENTION_ROLE_ID (variable)"/] --> script
+    script -- "webhook POST:<br/>announce · 3-day · day-of · post-event" --> discord["Discord channel"]
+    state -- "git commit + push<br/>[skip ci]" --> repo[("repo main")]
+```
+
+Each run makes one decision per event. Upcoming events come from the feed; the post-event
+checklist comes from saved state, because Meetup drops an event from the feed once it is over.
+
+```mermaid
+flowchart TD
+    ev["event in feed"] --> known{"announced<br/>in seen_events.json?"}
+    known -- no --> announce["post announcement<br/>+ task checklist"]
+    known -- yes --> dayof{"event day, ≥ 8 AM ET,<br/>day-of not sent?"}
+    dayof -- yes --> post2["post day-of reminder"]
+    dayof -- no --> three{"≥ 8 AM ET three days before,<br/>3-day not sent?"}
+    three -- yes --> post3["post 3-day reminder"]
+    three -- no --> idle["nothing"]
+
+    saved["event in saved state"] --> recap{"morning after the event<br/>(8 AM ET, up to 7 days),<br/>recap not sent?"}
+    recap -- yes --> post4["post post-event checklist"]
+    recap -- no --> idle
+
+    announce & post2 & post3 & post4 --> ok{"Discord 2xx?"}
+    ok -- yes --> save["mark in state, save file"]
+    ok -- no --> fail["log, leave unmarked,<br/>exit 1 → retried next poll"]
+```
+
+Entries for events gone from the feed are pruned 90 days after they started.
+
 ## Setup (one time)
 
 1. **Create the Discord webhook.** In Discord: the target channel → Edit Channel → Integrations
@@ -82,6 +126,7 @@ python3 meetup_to_discord.py --seed                    # record every current ev
 python3 meetup_to_discord.py                           # real poll: post + update seen_events.json
 python3 meetup_to_discord.py --dry-run --now 2026-10-19T10:00   # preview the 3-day reminder
 python3 meetup_to_discord.py --dry-run --now 2026-10-22T08:05   # preview the day-of reminder
+python3 meetup_to_discord.py --dry-run --now 2026-10-23T08:05   # preview the post-event checklist
 ```
 
 Options: `--state PATH` (default `seen_events.json`), `--group SLUG` or env `MEETUP_GROUP`
@@ -92,24 +137,29 @@ Tests: `python3 -m unittest discover -s tests`
 
 ## How reminders work
 
-Each event in `seen_events.json` carries three flags:
+Each event in `seen_events.json` carries four flags:
 
 ```json
 "316843450": {
   "title": "AWS Certifications & Career Success Workshop",
   "start": "2026-10-22T15:00:00-04:00",
+  "url": "https://www.meetup.com/aws-sbg-at-florida-international-university/events/316843450/",
   "announced": true,
   "reminded_3d": false,
-  "reminded_day_of": false
+  "reminded_day_of": false,
+  "posted_recap": false
 }
 ```
 
 - **3-day reminder** posts on the first poll at or after 8:00 AM ET three days before the event day.
 - **Day-of reminder** posts on the first poll at or after 8:00 AM ET on the event day (midnight
   if the event starts before 8). If the 3-day reminder was missed, only the day-of one posts.
+- **Post-event checklist** (survey, photos, slides, recap, LinkedIn, Instagram) posts at 8:00 AM
+  ET the morning after the event. It works from the saved state, since the event has left the
+  feed by then. If the bot was down, it still posts up to 7 days after the event, then gives up.
 - An event announced inside a window does not also get that window's reminder on the same run.
-- Seeded events still get reminders. To skip them for one event, set its two `reminded_*`
-  flags to `true` and commit.
+- Seeded events still get reminders and the recap. To skip any of them for one event, set the
+  matching flag to `true` and commit.
 
 ## Reset or re-post
 

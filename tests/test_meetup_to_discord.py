@@ -159,6 +159,23 @@ class FormatTests(unittest.TestCase):
         self.assertIsNone(m.role_mention(""))
         self.assertIsNone(m.role_mention(None))
 
+    def test_recap_matches_template(self):
+        text = m.format_recap(sample_event(), mention="<@&42>")
+        self.assertTrue(text.startswith(
+            "✅ **AWS Certifications & Career Success Workshop is a wrap! Post-event checklist**\n"))
+        self.assertIn(f"🔗 {EVENT_URL}\n", text)
+        self.assertIn("**Within 24 hours:**\n- [ ] Discord — thank-you announcement", text)
+        self.assertNotIn("Meetup —", text)  # survey link lives on the Meetup event page
+        self.assertIn("- [ ] Photos —", text)
+        self.assertIn("- [ ] Slides — post the workshop PowerPoint", text)
+        self.assertIn("**Within the week:**\n- [ ] Recap —", text)
+        self.assertIn("- [ ] LinkedIn — recap post", text)
+        self.assertIn("- [ ] Instagram — recap post", text)
+        self.assertIn("- [ ] Lab repo —", text)
+        self.assertTrue(text.endswith("Claim an item by replying with the task + your name! <@&42>"))
+        self.assertLessEqual(len(text), 2000)
+        self.assertNotIn("None", text)
+
     def test_reminder_without_location_has_no_pin_line(self):
         text = m.format_reminder(sample_event(), "remind_day_of", None)
         self.assertNotIn("📍", text)
@@ -217,6 +234,52 @@ class DecideActionsTests(unittest.TestCase):
                          ["remind_day_of"])
 
 
+class RecapDecisionTests(unittest.TestCase):
+    """After the event, Meetup drops it from the feed; the recap must come from saved state."""
+
+    def state(self, **over):
+        st = announced(reminded_3d=True, reminded_day_of=True, posted_recap=False, url=EVENT_URL)
+        st["316843450"].update(over)
+        return st
+
+    def kinds(self, st, now, events=()):
+        return [k for _, k in m.decide_actions(list(events), st, now)]
+
+    def test_recap_opens_8am_the_morning_after(self):
+        self.assertEqual(self.kinds(self.state(), et(2026, 10, 22, 23, 59)), [])
+        self.assertEqual(self.kinds(self.state(), et(2026, 10, 23, 7, 59)), [])
+        self.assertEqual(self.kinds(self.state(), et(2026, 10, 23, 8, 0)), ["post_event"])
+
+    def test_recap_window_closes_7_days_after_start(self):
+        self.assertEqual(self.kinds(self.state(), et(2026, 10, 29, 14, 59)), ["post_event"])
+        self.assertEqual(self.kinds(self.state(), et(2026, 10, 29, 15, 0)), [])
+
+    def test_recap_not_repeated(self):
+        self.assertEqual(self.kinds(self.state(posted_recap=True), et(2026, 10, 23, 9)), [])
+
+    def test_recap_event_is_rebuilt_from_state_with_saved_url(self):
+        (ev, kind), = m.decide_actions([], self.state(), et(2026, 10, 23, 9))
+        self.assertEqual(kind, "post_event")
+        self.assertEqual(ev.id, "316843450")
+        self.assertEqual(ev.title, "AWS Certifications & Career Success Workshop")
+        self.assertEqual(ev.url, EVENT_URL)
+        self.assertEqual(ev.start, et(2026, 10, 22, 15, 0))
+
+    def test_recap_url_falls_back_to_group_slug_when_not_saved(self):
+        st = self.state()
+        del st["316843450"]["url"]
+        (ev, _), = m.decide_actions([], st, et(2026, 10, 23, 9), group="some-group")
+        self.assertEqual(ev.url, "https://www.meetup.com/some-group/events/316843450/")
+
+    def test_unannounced_entries_never_get_a_recap(self):
+        self.assertEqual(self.kinds(self.state(announced=False), et(2026, 10, 23, 9)), [])
+
+    def test_state_only_key_with_underscore_is_ignored(self):
+        st = self.state()
+        st["_last_checked"] = "2026-10-01T00:00:00-04:00"
+        self.assertEqual(self.kinds(st, et(2026, 10, 23, 9)), ["post_event"])
+
+
 class ApplyActionTests(unittest.TestCase):
     ev = sample_event()
 
@@ -241,6 +304,17 @@ class ApplyActionTests(unittest.TestCase):
         m.apply_action(st, self.ev, "announce", et(2026, 10, 22, 9))
         self.assertTrue(st["316843450"]["reminded_3d"])
         self.assertTrue(st["316843450"]["reminded_day_of"])
+
+    def test_announce_saves_url_and_pending_recap(self):
+        st = {}
+        m.apply_action(st, self.ev, "announce", et(2026, 10, 17, 12))
+        self.assertEqual(st["316843450"]["url"], EVENT_URL)
+        self.assertFalse(st["316843450"]["posted_recap"])
+
+    def test_post_event_marks_recap_done(self):
+        st = announced(url=EVENT_URL, posted_recap=False)
+        m.apply_action(st, self.ev, "post_event", et(2026, 10, 23, 9))
+        self.assertTrue(st["316843450"]["posted_recap"])
 
     def test_day_of_reminder_also_closes_3d(self):
         st = announced()
@@ -411,11 +485,28 @@ class RunFlowTests(unittest.TestCase):
         for text in self.posted:
             self.assertTrue(text.endswith("<@&42>"), text)
 
+    def test_recap_posts_once_the_morning_after_even_with_empty_feed(self):
+        self.go(seed=True)
+        st = json.loads(self.state_path.read_text())
+        self.assertEqual(st["316843450"]["url"], EVENT_URL)
+        self.events = []  # Meetup dropped the past event from the feed
+        self.go(now=et(2026, 10, 23, 8, 5), mention_role_id="42")
+        self.go(now=et(2026, 10, 23, 8, 20), mention_role_id="42")
+        self.assertEqual(len(self.posted), 1)
+        self.assertIn("Post-event checklist", self.posted[0])
+        self.assertTrue(self.posted[0].endswith("<@&42>"))
+
+    def test_url_is_backfilled_for_entries_seeded_before_urls_were_saved(self):
+        self.state_path.write_text(json.dumps(announced()))
+        self.go(now=et(2026, 10, 17, 12))
+        self.assertEqual(json.loads(self.state_path.read_text())["316843450"]["url"], EVENT_URL)
+        self.assertEqual(self.posted, [])
+
     def test_heartbeat_written_when_idle_and_stale(self):
         self.go(seed=True)
-        self.go(now=et(2026, 10, 25, 12))  # event passed, no actions
+        self.go(now=et(2026, 11, 5, 12))  # event and recap window both passed, no actions
         st = json.loads(self.state_path.read_text())
-        self.assertEqual(st["_last_checked"], et(2026, 10, 25, 12).isoformat())
+        self.assertEqual(st["_last_checked"], et(2026, 11, 5, 12).isoformat())
 
 
 class CliTests(unittest.TestCase):
