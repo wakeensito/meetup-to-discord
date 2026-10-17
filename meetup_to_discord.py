@@ -1,0 +1,468 @@
+#!/usr/bin/env python3
+"""Post new Meetup events (and two reminders) to a Discord channel via webhook.
+
+Stdlib only. Reads the group's public iCal feed, keeps state in a JSON file,
+and never marks an event as seen until Discord has accepted the post.
+
+    python3 meetup_to_discord.py --seed       # first run: record current events, post nothing
+    python3 meetup_to_discord.py              # normal poll
+    python3 meetup_to_discord.py --dry-run    # print messages, write nothing
+    python3 meetup_to_discord.py --dry-run --now 2026-10-19T10:00
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Callable, Iterable
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
+
+ET = ZoneInfo("America/New_York")
+DEFAULT_GROUP = "aws-sbg-at-florida-international-university"
+USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/129.0 Safari/537.36 meetup-to-discord/1.0"
+)
+DISCORD_LIMIT = 2000
+REMIND_3D = timedelta(days=3)
+DAY_OF_HOUR = 8
+PRUNE_AFTER = timedelta(days=90)
+HEARTBEAT_EVERY = timedelta(days=7)
+HEARTBEAT_KEY = "_last_checked"
+
+CHECKLIST = """**Marketing & Outreach:**
+- [ ] Discord — 3 posts: announcement today, reminder 3 days out, day-of morning
+- [ ] Linktree — add the event link at the top
+- [ ] Instagram — feed post + story
+- [ ] LinkedIn — post from the group page
+- [ ] PantherConnect — create and publish the event
+
+**Tabling & Promotion:**
+- [ ] Tabling session — schedule and host 1 on-campus tabling date prior to the workshop
+- [ ] Tabling materials — update PowerPoint promo loop & print QR code flyers
+
+**Technical Prep (Workshop Leads):**
+- [ ] Workshop slide deck — complete presentation deck
+- [ ] Hands-on materials — build & test GitHub lab repo and step-by-step documentation
+- [ ] Dry run — complete rehearsal 1 week prior to the workshop
+
+Claim an item by replying with the task + your name!"""
+
+
+class PostError(Exception):
+    """Discord did not accept the message."""
+
+
+@dataclass
+class Event:
+    id: str
+    title: str
+    start: datetime
+    end: datetime | None
+    url: str
+    description: str
+
+
+# ---------------------------------------------------------------- fetching
+
+def fetch(url: str, timeout: int = 20) -> str:
+    req = Request(url, headers={"User-Agent": USER_AGENT})
+    with urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode("utf-8", errors="replace")
+
+
+def feed_url(group: str) -> str:
+    return f"https://www.meetup.com/{group}/events/ical/"
+
+
+# ---------------------------------------------------------------- iCal parsing
+
+def _unfold(text: str) -> list[str]:
+    lines: list[str] = []
+    for raw in text.replace("\r\n", "\n").split("\n"):
+        if raw[:1] in (" ", "\t") and lines:
+            lines[-1] += raw[1:]
+        else:
+            lines.append(raw)
+    return lines
+
+
+def _unescape(value: str) -> str:
+    out, i = [], 0
+    while i < len(value):
+        c = value[i]
+        if c == "\\" and i + 1 < len(value):
+            nxt = value[i + 1]
+            out.append("\n" if nxt in "nN" else nxt)
+            i += 2
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def _parse_dt(params: str, value: str) -> datetime:
+    tzid = None
+    for p in params.split(";"):
+        if p.startswith("TZID="):
+            tzid = p[5:]
+    if value.endswith("Z"):
+        dt = datetime.strptime(value, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    elif "T" in value:
+        dt = datetime.strptime(value, "%Y%m%dT%H%M%S").replace(tzinfo=ZoneInfo(tzid) if tzid else ET)
+    else:  # all-day
+        dt = datetime.strptime(value, "%Y%m%d").replace(tzinfo=ET)
+    return dt.astimezone(ET)
+
+
+def parse_ical(text: str) -> list[Event]:
+    events: list[Event] = []
+    props: dict[str, tuple[str, str]] | None = None
+    for line in _unfold(text):
+        if line == "BEGIN:VEVENT":
+            props = {}
+            continue
+        if line == "END:VEVENT" and props is not None:
+            ev = _event_from_props(props)
+            if ev:
+                events.append(ev)
+            props = None
+            continue
+        if props is None or ":" not in line:
+            continue
+        head, value = line.split(":", 1)
+        name, _, params = head.partition(";")
+        props[name.upper()] = (params, value)
+    return events
+
+
+def _event_from_props(p: dict[str, tuple[str, str]]) -> Event | None:
+    if "DTSTART" not in p or "SUMMARY" not in p:
+        return None
+    url = _unescape(p.get("URL", ("", ""))[1])
+    uid = p.get("UID", ("", ""))[1]
+    ev_id = _digits(uid) or _url_event_id(url)
+    if not ev_id:
+        return None
+    end = _parse_dt(*p["DTEND"]) if "DTEND" in p else None
+    return Event(
+        id=ev_id,
+        title=_unescape(p["SUMMARY"][1]).strip(),
+        start=_parse_dt(*p["DTSTART"]),
+        end=end,
+        url=url,
+        description=_unescape(p.get("DESCRIPTION", ("", ""))[1]),
+    )
+
+
+def _digits(s: str) -> str | None:
+    m = re.search(r"\d+", s)
+    return m.group(0) if m else None
+
+
+def _url_event_id(url: str) -> str | None:
+    m = re.search(r"/events/(\d+)", url)
+    return m.group(1) if m else None
+
+
+# ---------------------------------------------------------------- location
+
+def extract_room(description: str) -> str | None:
+    m = re.search(r"Room:\s*([^\n*]+)", description)
+    return m.group(1).strip() if m else None
+
+
+def parse_venue(html: str) -> str | None:
+    for m in re.finditer(r"<script[^>]*application/ld\+json[^>]*>(.*?)</script>", html, re.S):
+        try:
+            data = json.loads(m.group(1))
+        except ValueError:
+            continue
+        for item in data if isinstance(data, list) else [data]:
+            if not isinstance(item, dict) or not str(item.get("@type", "")).endswith("Event"):
+                continue
+            loc = item.get("location")
+            for place in loc if isinstance(loc, list) else [loc]:
+                if isinstance(place, dict) and place.get("@type") == "Place" and place.get("name"):
+                    return str(place["name"]).strip()
+    return None
+
+
+def fetch_venue(event_url: str) -> str | None:
+    return parse_venue(fetch(event_url))
+
+
+def format_location(venue: str | None, room: str | None) -> str | None:
+    parts = [venue] if venue else []
+    if room:
+        parts.append(f"Room: {room}")
+    return " · ".join(parts) if parts else None
+
+
+def resolve_location(ev: Event, venue_lookup: Callable[[str], str | None]) -> str | None:
+    try:
+        venue = venue_lookup(ev.url)
+    except Exception as exc:  # best-effort enrichment only
+        print(f"warn: venue lookup failed for {ev.url}: {exc}", file=sys.stderr)
+        venue = None
+    return format_location(venue, extract_room(ev.description))
+
+
+# ---------------------------------------------------------------- formatting
+
+def _clock(dt: datetime) -> str:
+    return dt.astimezone(ET).strftime("%I:%M %p").lstrip("0")
+
+
+def _date_words(dt: datetime) -> str:
+    dt = dt.astimezone(ET)
+    return f"{dt.strftime('%A')}, {dt.strftime('%B')} {dt.day}"
+
+
+def _cap(text: str) -> str:
+    return text if len(text) <= DISCORD_LIMIT else text[: DISCORD_LIMIT - 10].rstrip() + "…"
+
+
+def format_announcement(ev: Event, location: str | None) -> str:
+    when = f"📅 {_date_words(ev.start)} · {_clock(ev.start)}"
+    if ev.end:
+        when += f"–{_clock(ev.end)}"
+    when += " ET"
+    lines = ["📣 **New event is up on Meetup!**", "", f"**{ev.title}**", when]
+    if location:
+        lines.append(f"📍 {location}")
+    lines += [f"🔗 {ev.url}", "", CHECKLIST]
+    return _cap("\n".join(lines))
+
+
+def format_reminder(ev: Event, kind: str, location: str | None) -> str:
+    if kind == "remind_day_of":
+        lines = [f"📣 **Today!** {ev.title} starts at {_clock(ev.start)} ET"]
+    else:
+        lines = [f"⏰ **Reminder:** {ev.title} is {_date_words(ev.start)} at {_clock(ev.start)} ET"]
+    if location:
+        lines.append(f"📍 {location}")
+    lines.append(f"🔗 {ev.url}")
+    return _cap("\n".join(lines))
+
+
+# ---------------------------------------------------------------- Discord
+
+def post_discord(webhook_url: str, content: str, retries: int = 2) -> None:
+    sep = "&" if "?" in webhook_url else "?"
+    url = f"{webhook_url}{sep}wait=true"
+    body = json.dumps({"content": content, "allowed_mentions": {"parse": []}}).encode()
+    req = Request(url, data=body, method="POST",
+                  headers={"Content-Type": "application/json", "User-Agent": USER_AGENT})
+    for attempt in range(retries + 1):
+        try:
+            with urlopen(req, timeout=20) as resp:
+                if 200 <= resp.status < 300:
+                    return
+                raise PostError(f"Discord returned HTTP {resp.status}")
+        except HTTPError as e:
+            detail = e.read().decode("utf-8", errors="replace")
+            if e.code == 429 and attempt < retries:
+                try:
+                    wait = float(json.loads(detail).get("retry_after", 1))
+                except (ValueError, AttributeError):
+                    wait = 1.0
+                time.sleep(wait)
+                continue
+            raise PostError(f"Discord returned HTTP {e.code}: {detail[:200]}") from e
+        except URLError as e:
+            raise PostError(f"Discord unreachable: {e}") from e
+    raise PostError("Discord rate limit retries exhausted")
+
+
+# ---------------------------------------------------------------- state
+
+def load_state(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8") or "{}")
+
+
+def save_state(path: Path, state: dict) -> None:
+    path.write_text(json.dumps(state, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+                    encoding="utf-8")
+
+
+def _day_of_open(start: datetime) -> datetime:
+    """8:00 AM ET on the event day, or midnight if the event starts before 8."""
+    start = start.astimezone(ET)
+    midnight = start.replace(hour=0, minute=0, second=0, microsecond=0)
+    eight = midnight.replace(hour=DAY_OF_HOUR)
+    return eight if start > eight else midnight
+
+
+def _morning_of(day: datetime) -> datetime:
+    return day.astimezone(ET).replace(hour=DAY_OF_HOUR, minute=0, second=0, microsecond=0)
+
+
+def _3d_open(start: datetime) -> datetime:
+    """8:00 AM ET three days before the event day."""
+    return _morning_of(start - REMIND_3D)
+
+
+def _in_3d_window(start: datetime, now: datetime) -> bool:
+    return _3d_open(start) <= now < start
+
+
+def _in_day_of_window(start: datetime, now: datetime) -> bool:
+    return _day_of_open(start) <= now < start
+
+
+def decide_actions(events: Iterable[Event], state: dict, now: datetime) -> list[tuple[Event, str]]:
+    actions: list[tuple[Event, str]] = []
+    for ev in events:
+        entry = state.get(ev.id)
+        if not entry or not entry.get("announced"):
+            actions.append((ev, "announce"))
+        elif not entry.get("reminded_day_of") and _in_day_of_window(ev.start, now):
+            actions.append((ev, "remind_day_of"))
+        elif not entry.get("reminded_3d") and _in_3d_window(ev.start, now):
+            actions.append((ev, "remind_3d"))
+    return actions
+
+
+def apply_action(state: dict, ev: Event, kind: str, now: datetime) -> None:
+    entry = state.setdefault(ev.id, {})
+    entry["title"] = ev.title
+    entry["start"] = ev.start.isoformat()
+    if kind == "announce":
+        entry["announced"] = True
+        entry["reminded_3d"] = entry.get("reminded_3d", False) or now >= _3d_open(ev.start)
+        entry["reminded_day_of"] = entry.get("reminded_day_of", False) or now >= _day_of_open(ev.start)
+    elif kind == "remind_day_of":
+        entry["reminded_day_of"] = True
+        entry["reminded_3d"] = True
+    elif kind == "remind_3d":
+        entry["reminded_3d"] = True
+    else:
+        raise ValueError(kind)
+
+
+def prune_state(state: dict, feed_ids: set[str], now: datetime) -> None:
+    for key in list(state):
+        if key.startswith("_") or key in feed_ids:
+            continue
+        try:
+            start = datetime.fromisoformat(state[key]["start"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if start < now - PRUNE_AFTER:
+            del state[key]
+
+
+def touch_heartbeat(state: dict, now: datetime) -> bool:
+    last = state.get(HEARTBEAT_KEY)
+    try:
+        if last and now - datetime.fromisoformat(last) < HEARTBEAT_EVERY:
+            return False
+    except ValueError:
+        pass
+    state[HEARTBEAT_KEY] = now.replace(microsecond=0).isoformat()
+    return True
+
+
+# ---------------------------------------------------------------- orchestration
+
+def run(events: list[Event], state_path: Path, now: datetime, poster: Callable[[str], None],
+        *, seed: bool = False, dry_run: bool = False,
+        venue_lookup: Callable[[str], str | None] = fetch_venue) -> int:
+    state = load_state(state_path)
+    feed_ids = {ev.id for ev in events}
+
+    if seed:
+        for ev in events:
+            if ev.id not in state:
+                entry = {"announced": True, "reminded_3d": False, "reminded_day_of": False}
+                state[ev.id] = entry
+                entry["title"], entry["start"] = ev.title, ev.start.isoformat()
+        touch_heartbeat(state, now)
+        if not dry_run:
+            save_state(state_path, state)
+        print(f"seeded {len(events)} event(s); nothing posted")
+        return 0
+
+    actions = decide_actions(events, state, now)
+    failed = 0
+    for ev, kind in actions:
+        location = resolve_location(ev, venue_lookup)
+        content = format_announcement(ev, location) if kind == "announce" \
+            else format_reminder(ev, kind, location)
+        if dry_run:
+            print(f"--- would post [{kind}] for {ev.id} ({len(content)} chars) ---\n{content}\n")
+            continue
+        try:
+            poster(content)
+        except PostError as exc:
+            failed += 1
+            print(f"error: {kind} for {ev.id} failed: {exc}", file=sys.stderr)
+            continue
+        apply_action(state, ev, kind, now)
+        save_state(state_path, state)
+        print(f"posted {kind} for {ev.id}: {ev.title}")
+
+    if dry_run:
+        if not actions:
+            print("nothing to post")
+        return 0
+
+    changed = False
+    before = json.dumps(state, sort_keys=True)
+    prune_state(state, feed_ids, now)
+    if not actions:
+        touch_heartbeat(state, now)
+    changed = json.dumps(state, sort_keys=True) != before
+    if changed or not state_path.exists():
+        save_state(state_path, state)
+    if not actions:
+        print("nothing to post")
+    return 1 if failed else 0
+
+
+def parse_now(value: str | None) -> datetime:
+    if not value:
+        return datetime.now(tz=ET)
+    dt = datetime.fromisoformat(value)
+    return dt.replace(tzinfo=ET) if dt.tzinfo is None else dt.astimezone(ET)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--seed", action="store_true", help="record current events without posting")
+    ap.add_argument("--dry-run", action="store_true", help="print messages; post and write nothing")
+    ap.add_argument("--state", default="seen_events.json", help="path to the state file")
+    ap.add_argument("--now", help="override the clock (ISO 8601, naive = America/New_York)")
+    ap.add_argument("--group", default=os.environ.get("MEETUP_GROUP", DEFAULT_GROUP))
+    args = ap.parse_args(argv)
+
+    webhook = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+    if not webhook and not (args.dry_run or args.seed):
+        print("error: DISCORD_WEBHOOK_URL is not set (use --dry-run to test without it)", file=sys.stderr)
+        return 2
+
+    try:
+        events = parse_ical(fetch(feed_url(args.group)))
+    except (URLError, HTTPError, OSError, ValueError) as exc:
+        print(f"error: could not fetch/parse the Meetup iCal feed: {exc}", file=sys.stderr)
+        return 1
+    print(f"feed: {len(events)} event(s) for {args.group}")
+
+    poster = (lambda content: post_discord(webhook, content)) if webhook else (lambda c: None)
+    return run(events, Path(args.state), parse_now(args.now), poster,
+               seed=args.seed, dry_run=args.dry_run)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

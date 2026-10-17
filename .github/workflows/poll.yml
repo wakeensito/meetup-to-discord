@@ -1,0 +1,55 @@
+# Polls the Meetup iCal feed and posts new events / reminders to Discord.
+# State lives in seen_events.json and is committed back by this workflow,
+# so main must NOT be branch-protected (the Actions token cannot bypass it).
+name: Poll Meetup
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "Seed seen_events.json from the current feed without posting"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Print what would be posted; post and commit nothing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: poll
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Poll feed and post
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          flags=""
+          [ "${{ inputs.seed }}" = "true" ] && flags="$flags --seed"
+          [ "${{ inputs.dry_run }}" = "true" ] && flags="$flags --dry-run"
+          python3 meetup_to_discord.py $flags
+
+      - name: Commit updated state
+        if: always() && inputs.dry_run != true
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add seen_events.json
+          if git diff --cached --quiet; then
+            echo "state unchanged"
+            exit 0
+          fi
+          git commit -m "chore: update seen events [skip ci]"
+          git pull --rebase origin main
+          git push origin HEAD:main

@@ -1,0 +1,20 @@
+name: Tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 --version
+      - run: python3 -m unittest discover -s tests -v
+      - run: python3 -m py_compile meetup_to_discord.py
