@@ -227,27 +227,37 @@ def _date_words(dt: datetime) -> str:
     return f"{dt.strftime('%A')}, {dt.strftime('%B')} {dt.day}"
 
 
+def role_mention(role_id: str | None) -> str | None:
+    role_id = (role_id or "").strip()
+    return f"<@&{role_id}>" if role_id else None
+
+
+def _lead(mention: str | None, first_line: str) -> str:
+    return f"{mention} {first_line}" if mention else first_line
+
+
 def _cap(text: str) -> str:
     return text if len(text) <= DISCORD_LIMIT else text[: DISCORD_LIMIT - 10].rstrip() + "…"
 
 
-def format_announcement(ev: Event, location: str | None) -> str:
+def format_announcement(ev: Event, location: str | None, mention: str | None = None) -> str:
     when = f"📅 {_date_words(ev.start)} · {_clock(ev.start)}"
     if ev.end:
         when += f"–{_clock(ev.end)}"
     when += " ET"
-    lines = ["📣 **New event is up on Meetup!**", "", f"**{ev.title}**", when]
+    lines = [_lead(mention, "📣 **New event is up on Meetup!**"), "", f"**{ev.title}**", when]
     if location:
         lines.append(f"📍 {location}")
     lines += [f"🔗 {ev.url}", "", CHECKLIST]
     return _cap("\n".join(lines))
 
 
-def format_reminder(ev: Event, kind: str, location: str | None) -> str:
+def format_reminder(ev: Event, kind: str, location: str | None, mention: str | None = None) -> str:
     if kind == "remind_day_of":
-        lines = [f"📣 **Today!** {ev.title} starts at {_clock(ev.start)} ET"]
+        first = f"📣 **Today!** {ev.title} starts at {_clock(ev.start)} ET"
     else:
-        lines = [f"⏰ **Reminder:** {ev.title} is {_date_words(ev.start)} at {_clock(ev.start)} ET"]
+        first = f"⏰ **Reminder:** {ev.title} is {_date_words(ev.start)} at {_clock(ev.start)} ET"
+    lines = [_lead(mention, first)]
     if location:
         lines.append(f"📍 {location}")
     lines.append(f"🔗 {ev.url}")
@@ -256,10 +266,14 @@ def format_reminder(ev: Event, kind: str, location: str | None) -> str:
 
 # ---------------------------------------------------------------- Discord
 
-def post_discord(webhook_url: str, content: str, retries: int = 2) -> None:
+def post_discord(webhook_url: str, content: str, retries: int = 2,
+                 role_id: str | None = None) -> None:
     sep = "&" if "?" in webhook_url else "?"
     url = f"{webhook_url}{sep}wait=true"
-    body = json.dumps({"content": content, "allowed_mentions": {"parse": []}}).encode()
+    allowed: dict = {"parse": []}  # never @everyone/@here or users from event text
+    if role_id:
+        allowed["roles"] = [role_id]
+    body = json.dumps({"content": content, "allowed_mentions": allowed}).encode()
     req = Request(url, data=body, method="POST",
                   headers={"Content-Type": "application/json", "User-Agent": USER_AGENT})
     for attempt in range(retries + 1):
@@ -378,8 +392,10 @@ def touch_heartbeat(state: dict, now: datetime) -> bool:
 
 def run(events: list[Event], state_path: Path, now: datetime, poster: Callable[[str], None],
         *, seed: bool = False, dry_run: bool = False,
-        venue_lookup: Callable[[str], str | None] = fetch_venue) -> int:
+        venue_lookup: Callable[[str], str | None] = fetch_venue,
+        mention_role_id: str | None = None) -> int:
     state = load_state(state_path)
+    mention = role_mention(mention_role_id)
     feed_ids = {ev.id for ev in events}
 
     if seed:
@@ -398,8 +414,8 @@ def run(events: list[Event], state_path: Path, now: datetime, poster: Callable[[
     failed = 0
     for ev, kind in actions:
         location = resolve_location(ev, venue_lookup)
-        content = format_announcement(ev, location) if kind == "announce" \
-            else format_reminder(ev, kind, location)
+        content = format_announcement(ev, location, mention) if kind == "announce" \
+            else format_reminder(ev, kind, location, mention)
         if dry_run:
             print(f"--- would post [{kind}] for {ev.id} ({len(content)} chars) ---\n{content}\n")
             continue
@@ -445,6 +461,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--state", default="seen_events.json", help="path to the state file")
     ap.add_argument("--now", help="override the clock (ISO 8601, naive = America/New_York)")
     ap.add_argument("--group", default=os.environ.get("MEETUP_GROUP", DEFAULT_GROUP))
+    ap.add_argument("--mention-role", default=os.environ.get("DISCORD_MENTION_ROLE_ID", ""),
+                    help="Discord role ID to @mention at the top of every post")
     args = ap.parse_args(argv)
 
     webhook = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
@@ -459,9 +477,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(f"feed: {len(events)} event(s) for {args.group}")
 
-    poster = (lambda content: post_discord(webhook, content)) if webhook else (lambda c: None)
+    role_id = args.mention_role.strip() or None
+    poster = (lambda content: post_discord(webhook, content, role_id=role_id)) if webhook \
+        else (lambda c: None)
     return run(events, Path(args.state), parse_now(args.now), poster,
-               seed=args.seed, dry_run=args.dry_run)
+               seed=args.seed, dry_run=args.dry_run, mention_role_id=role_id)
 
 
 if __name__ == "__main__":

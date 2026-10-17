@@ -139,6 +139,24 @@ class FormatTests(unittest.TestCase):
         self.assertIn("3:00 PM ET", text)
         self.assertIn("📍 FIU · Room: INV1 - 201", text)
 
+    def test_announcement_mentions_role_on_first_line_when_given(self):
+        text = m.format_announcement(sample_event(), None, mention="<@&42>")
+        self.assertTrue(text.startswith("<@&42> 📣 **New event is up on Meetup!**\n"))
+
+    def test_reminders_mention_role_on_first_line_when_given(self):
+        for kind in ("remind_3d", "remind_day_of"):
+            text = m.format_reminder(sample_event(), kind, None, mention="<@&42>")
+            self.assertTrue(text.startswith("<@&42> "), text)
+
+    def test_no_mention_by_default(self):
+        self.assertNotIn("<@&", m.format_announcement(sample_event(), None))
+        self.assertNotIn("<@&", m.format_reminder(sample_event(), "remind_3d", None))
+
+    def test_role_mention_helper(self):
+        self.assertEqual(m.role_mention("42"), "<@&42>")
+        self.assertIsNone(m.role_mention(""))
+        self.assertIsNone(m.role_mention(None))
+
     def test_reminder_without_location_has_no_pin_line(self):
         text = m.format_reminder(sample_event(), "remind_day_of", None)
         self.assertNotIn("📍", text)
@@ -269,6 +287,12 @@ class PostDiscordTests(unittest.TestCase):
         self.assertEqual(body["content"], "hello")
         self.assertEqual(body["allowed_mentions"], {"parse": []})
 
+    def test_role_id_is_whitelisted_in_allowed_mentions(self):
+        with mock.patch.object(m, "urlopen", return_value=self.resp(204)) as uo:
+            m.post_discord("https://hook/x", "<@&42> hi", role_id="42")
+        body = json.loads(uo.call_args.args[0].data.decode())
+        self.assertEqual(body["allowed_mentions"], {"parse": [], "roles": ["42"]})
+
     def test_429_retries_after_sleeping(self):
         err = self.http_error(429, b'{"retry_after": 0.25}')
         with mock.patch.object(m, "urlopen", side_effect=[err, self.resp(200)]) as uo, \
@@ -376,6 +400,14 @@ class RunFlowTests(unittest.TestCase):
         self.assertEqual(len(self.posted), 2)
         self.assertIn("⏰", self.posted[0])
         self.assertIn("Today", self.posted[1])
+
+    def test_run_threads_role_mention_into_every_post(self):
+        self.go(seed=True)
+        self.go(now=et(2026, 10, 19, 10), mention_role_id="42")
+        self.go(now=et(2026, 10, 22, 8, 5), mention_role_id="42")
+        self.assertEqual(len(self.posted), 2)
+        for text in self.posted:
+            self.assertTrue(text.startswith("<@&42> "), text)
 
     def test_heartbeat_written_when_idle_and_stale(self):
         self.go(seed=True)

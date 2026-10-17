@@ -34,6 +34,7 @@ jobs:
       - name: Poll feed and post
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_MENTION_ROLE_ID: ${{ vars.DISCORD_MENTION_ROLE_ID }}
         run: |
           flags=""
           [ "${{ inputs.seed }}" = "true" ] && flags="$flags --seed"

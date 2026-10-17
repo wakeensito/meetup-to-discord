@@ -20,4 +20,6 @@ reminder 3 days out and the morning of. Zero AWS, zero dependencies.
 ## Working rules
 - TDD: every behavior change gets a failing test first. `python3 -m unittest discover -s tests`.
 - Local manual check: `python3 meetup_to_discord.py --dry-run --now 2026-10-19T10:00`.
-- Never commit the webhook URL. It is the `DISCORD_WEBHOOK_URL` Actions secret.
+- Never commit the webhook URL. It is the `DISCORD_WEBHOOK_URL` Actions secret. The optional
+  role ping is the `DISCORD_MENTION_ROLE_ID` repo *variable*; it is whitelisted in
+  `allowed_mentions.roles`, everything else stays unpingable.

@@ -24,7 +24,15 @@ short reminder 3 days before and on the morning of the event.
 3. **Seed the state** so old events are not re-announced. Either commit a seeded file locally
    (`python3 meetup_to_discord.py --seed`, then commit `seen_events.json`), or run the
    "Poll Meetup" workflow once from the Actions tab with the **seed** box checked.
-4. Done. The schedule is already on. Run the workflow manually from the Actions tab
+4. **Optional: @mention a role** (for example the E-board role) at the top of every post. Get
+   the role ID in Discord (Settings → Advanced → Developer Mode on, then Server Settings →
+   Roles → ⋯ → Copy Role ID) and store it as a repo variable:
+   ```sh
+   gh variable set DISCORD_MENTION_ROLE_ID -R wakeensito/meetup-to-discord --body "123456789012345678"
+   ```
+   Only that one role can be pinged; `@everyone`, `@here` and user mentions in event text stay
+   disabled.
+5. Done. The schedule is already on. Run the workflow manually from the Actions tab
    (**Run workflow**) any time to test.
 
 ## Run locally
@@ -40,7 +48,8 @@ python3 meetup_to_discord.py --dry-run --now 2026-10-22T08:05   # preview the da
 ```
 
 Options: `--state PATH` (default `seen_events.json`), `--group SLUG` or env `MEETUP_GROUP`
-(default `aws-sbg-at-florida-international-university`).
+(default `aws-sbg-at-florida-international-university`), `--mention-role ID` or env
+`DISCORD_MENTION_ROLE_ID`.
 
 Tests: `python3 -m unittest discover -s tests`
 
@@ -86,5 +95,5 @@ Each event in `seen_events.json` carries three flags:
   from a `Room: ...` line in the Meetup description. Put `Room: INV1 - 201` in the description
   and it shows up as `📍 Florida International University (Modesto main campus) · Room: INV1 - 201`.
   If neither is available the line is omitted.
-- **Mentions are disabled** (`allowed_mentions: {parse: []}`), so an event title containing
-  `@everyone` cannot ping the server.
+- **Mentions are locked down.** `allowed_mentions` is `{parse: []}` plus the one role from
+  `DISCORD_MENTION_ROLE_ID`, so an event title containing `@everyone` cannot ping the server.
