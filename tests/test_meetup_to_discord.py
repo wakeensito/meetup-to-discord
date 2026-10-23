@@ -113,7 +113,7 @@ class SurveyTests(unittest.TestCase):
     def test_member_thanks_with_survey_link(self):
         text = m.format_member_thanks(sample_event(), "https://forms.gle/AbC", mention="<@&7>")
         self.assertEqual(text, (
-            "🙌 **Thank you for coming to AWS Certifications & Career Success Workshop!**\n\n"
+            "**Thank you for coming to AWS Certifications & Career Success Workshop!**\n\n"
             "We'd love your feedback. It takes a minute and shapes the next one.\n\n"
             "📝 Feedback survey: https://forms.gle/AbC\n\n"
             f"🔗 Event page: {EVENT_URL}\n\n"
@@ -122,7 +122,7 @@ class SurveyTests(unittest.TestCase):
     def test_member_thanks_points_to_meetup_when_no_survey_link(self):
         text = m.format_member_thanks(sample_event(), None)
         self.assertEqual(text, (
-            "🙌 **Thank you for coming to AWS Certifications & Career Success Workshop!**\n\n"
+            "**Thank you for coming to AWS Certifications & Career Success Workshop!**\n\n"
             "We'd love your feedback. It takes a minute and shapes the next one.\n\n"
             "📝 Open the event page and tap **Feedback** to leave your review:\n\n"
             f"🔗 {EVENT_URL}"))
@@ -677,7 +677,7 @@ class RunFlowTests(unittest.TestCase):
         self.go(now=et(2026, 10, 23, 8, 20), announce_role_id="43")
         team = [t for t in self.posted if "Post-event checklist" in t]
         self.assertEqual(len(team), 1)
-        thanks = [t for t in self.member_posted if t.startswith("🙌 **Thank you")]
+        thanks = [t for t in self.member_posted if t.startswith("**Thank you")]
         self.assertEqual(len(thanks), 1)
         self.assertIn("tap **Feedback** to leave your review", thanks[0])
         self.assertNotIn("/feedback/", thanks[0])
@@ -691,7 +691,7 @@ class RunFlowTests(unittest.TestCase):
         self.go(now=et(2026, 10, 20, 12))  # still in feed, description edited
         self.events = []
         self.go(now=et(2026, 10, 23, 8, 5))
-        thanks = [t for t in self.member_posted if t.startswith("🙌")]
+        thanks = [t for t in self.member_posted if t.startswith("**Thank you")]
         self.assertIn("📝 Feedback survey: https://forms.gle/Late", thanks[0])
 
     def test_entries_from_before_member_posts_are_backfilled_as_already_announced(self):
@@ -715,7 +715,7 @@ class RunFlowTests(unittest.TestCase):
         self.assertIn("Post-event checklist", self.posted[0])
         self.assertTrue(self.posted[0].endswith("<@&42>"))
         self.assertEqual(len(self.member_posted), 1)  # seeded events still get the thank-you
-        self.assertTrue(self.member_posted[0].startswith("🙌"))
+        self.assertTrue(self.member_posted[0].startswith("**Thank you"))
 
     def test_url_is_backfilled_for_entries_seeded_before_urls_were_saved(self):
         self.state_path.write_text(json.dumps(announced()))

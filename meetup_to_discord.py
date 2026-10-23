@@ -369,7 +369,7 @@ def format_member_thanks(ev: Event, survey_url: str | None, mention: str | None 
     else:
         # Meetup's /feedback/ page is organizer-only; members use the Feedback button on the event page.
         how, link = "📝 Open the event page and tap **Feedback** to leave your review:", f"🔗 {ev.url}"
-    return _blocks(f"🙌 **Thank you for coming to {ev.title}!**", ask, how, link, mention)
+    return _blocks(f"**Thank you for coming to {ev.title}!**", ask, how, link, mention)
 
 
 def format_recap(ev: Event, mention: str | None = None) -> str:
