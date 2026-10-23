@@ -40,7 +40,7 @@ HEARTBEAT_EVERY = timedelta(days=7)
 HEARTBEAT_KEY = "_last_checked"
 
 CHECKLIST = """**Marketing & Outreach:**
-- [ ] Discord — 3 posts: announcement today, reminder 3 days out, day-of morning
+- ✅ Discord — automated: the bot posts the announcement, 3-day and day-of reminders in #announcements
 - [ ] Linktree — add the event link at the top
 - [ ] Instagram — feed post + story
 - [ ] LinkedIn — post from the group page
@@ -59,7 +59,7 @@ Claim an item by replying with the task + your name!"""
 
 
 RECAP_CHECKLIST = """**Within 24 hours:**
-- [ ] Discord — thank-you announcement with the feedback survey link
+- ✅ Discord — automated: thank-you + feedback survey post in #announcements
 - [ ] Photos — upload to the shared drive and post a few here
 - [ ] Slides — post the workshop PowerPoint / PDF in Discord
 
@@ -84,6 +84,14 @@ class Event:
     end: datetime | None
     url: str
     description: str
+    survey_url: str | None = None
+
+
+MEMBER_KINDS = {"member_announce", "remind_3d", "remind_day_of", "member_thanks"}
+SURVEY_HOSTS = (
+    "forms.gle", "docs.google.com/forms", "forms.office.com", "forms.microsoft.com",
+    "typeform.com", "surveymonkey.com", "qualtrics.com", "airtable.com", "tally.so", "jotform.com",
+)
 
 
 # ---------------------------------------------------------------- fetching
@@ -96,6 +104,13 @@ def fetch(url: str, timeout: int = 20) -> str:
 
 def feed_url(group: str) -> str:
     return f"https://www.meetup.com/{group}/events/ical/"
+
+
+def load_feed(source: str) -> list[Event]:
+    """Parse the iCal feed from a URL or a local file (handy for tests and dry runs)."""
+    text = fetch(source) if source.startswith(("http://", "https://")) else \
+        Path(source).read_text(encoding="utf-8")
+    return parse_ical(text)
 
 
 def event_url(group: str, event_id: str) -> str:
@@ -235,6 +250,32 @@ def resolve_location(ev: Event, venue_lookup: Callable[[str], str | None]) -> st
     return format_location(venue, extract_room(ev.description))
 
 
+def blurb(description: str, limit: int = 300) -> str | None:
+    """First real paragraph of the Meetup description, bold stripped, capped at a word."""
+    for para in re.split(r"\n\s*\n", description or ""):
+        lines = [ln.strip() for ln in para.splitlines() if ln.strip()]
+        if not lines:
+            continue
+        # Meetup prefixes the description with the group name on a line of its own.
+        if len(lines) > 1 and len(lines[0]) <= 80 and not re.search(r"[.!?:]$", lines[0]):
+            lines = lines[1:]
+        text = " ".join(lines).replace("**", "").strip()
+        if not text or re.match(r"Room:", text):
+            continue
+        if len(text) > limit:
+            text = text[:limit].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
+        return text
+    return None
+
+
+def find_survey_url(description: str) -> str | None:
+    for m in re.finditer(r"https?://[^\s<>()\[\]]+", description or ""):
+        url = m.group(0).rstrip(".,;:!?")
+        if any(host in url for host in SURVEY_HOSTS):
+            return url
+    return None
+
+
 # ---------------------------------------------------------------- formatting
 
 def _clock(dt: datetime) -> str:
@@ -283,6 +324,49 @@ def format_reminder(ev: Event, kind: str, location: str | None, mention: str | N
     if mention:
         lines.append(mention)
     return _cap("\n".join(lines))
+
+
+def _when_line(ev: Event) -> str:
+    when = f"🕒 {_clock(ev.start)}"
+    if ev.end:
+        when += f"–{_clock(ev.end)}"
+    return when + " ET"
+
+
+def _blocks(*blocks: str | None) -> str:
+    return _cap("\n\n".join(b for b in blocks if b))
+
+
+def format_member_announcement(ev: Event, location: str | None, blurb_text: str | None,
+                               mention: str | None = None) -> str:
+    details = [f"📅 {_date_words(ev.start)}", _when_line(ev)]
+    if location:
+        details.append(f"📍 {location}")
+    return _blocks(f"📣 **New event: {ev.title}**", "\n".join(details), blurb_text,
+                   f"🔗 RSVP on Meetup: {ev.url}", mention)
+
+
+def format_member_reminder(ev: Event, kind: str, location: str | None,
+                           mention: str | None = None) -> str:
+    if kind == "remind_day_of":
+        head = f"🚀 **Today: {ev.title}**"
+        details = [_when_line(ev)]
+        tail = f"See you there! 🔗 {ev.url}"
+    else:
+        head = f"⏰ **Coming up {ev.start.astimezone(ET).strftime('%A')}: {ev.title}**"
+        details = [f"📅 {_date_words(ev.start)}", _when_line(ev)]
+        tail = f"Haven't RSVP'd yet? 🔗 {ev.url}"
+    if location:
+        details.append(f"📍 {location}")
+    return _blocks(head, "\n".join(details), tail, mention)
+
+
+def format_member_thanks(ev: Event, survey_url: str | None, mention: str | None = None) -> str:
+    survey = survey_url or "on the Meetup event page below"
+    return _blocks(f"🙌 **Thank you for coming to {ev.title}!**",
+                   "We'd love your feedback. It takes a minute and shapes the next one.\n"
+                   f"📝 Feedback survey: {survey}",
+                   f"🔗 Event page: {ev.url}", mention)
 
 
 def format_recap(ev: Event, mention: str | None = None) -> str:
@@ -377,29 +461,36 @@ def _event_from_state(event_id: str, entry: dict, group: str) -> Event | None:
     except (KeyError, TypeError, ValueError):
         return None
     return Event(id=event_id, title=str(entry.get("title") or "Event"), start=start, end=None,
-                 url=entry.get("url") or event_url(group, event_id), description="")
+                 url=entry.get("url") or event_url(group, event_id), description="",
+                 survey_url=entry.get("survey_url"))
 
 
 def decide_actions(events: Iterable[Event], state: dict, now: datetime,
                    group: str = DEFAULT_GROUP) -> list[tuple[Event, str]]:
     actions: list[tuple[Event, str]] = []
     for ev in events:
-        entry = state.get(ev.id)
-        if not entry or not entry.get("announced"):
-            actions.append((ev, "announce"))
-        elif not entry.get("reminded_day_of") and _in_day_of_window(ev.start, now):
-            actions.append((ev, "remind_day_of"))
-        elif not entry.get("reminded_3d") and _in_3d_window(ev.start, now):
-            actions.append((ev, "remind_3d"))
-    # Past events fall out of the feed, so the recap is driven by saved state.
+        entry = state.get(ev.id) or {}
+        if not entry.get("announced"):
+            actions.append((ev, "announce"))            # E-board task post
+        if not entry.get("member_announced"):
+            actions.append((ev, "member_announce"))     # #announcements
+        if entry.get("announced") or entry.get("member_announced"):
+            if not entry.get("reminded_day_of") and _in_day_of_window(ev.start, now):
+                actions.append((ev, "remind_day_of"))
+            elif not entry.get("reminded_3d") and _in_3d_window(ev.start, now):
+                actions.append((ev, "remind_3d"))
+    # Past events fall out of the feed, so the morning-after posts come from saved state.
     for event_id, entry in state.items():
         if event_id.startswith("_") or not isinstance(entry, dict):
             continue
-        if not entry.get("announced") or entry.get("posted_recap"):
-            continue
         ev = _event_from_state(event_id, entry, group)
-        if ev and _in_recap_window(ev.start, now):
+        if not ev or not _in_recap_window(ev.start, now):
+            continue
+        if entry.get("announced") and not entry.get("posted_recap"):
             actions.append((ev, "post_event"))
+        if (entry.get("announced") or entry.get("member_announced")) \
+                and not entry.get("member_thanked"):
+            actions.append((ev, "member_thanks"))
     return actions
 
 
@@ -409,11 +500,18 @@ def apply_action(state: dict, ev: Event, kind: str, now: datetime) -> None:
     entry["start"] = ev.start.isoformat()
     if ev.url:
         entry["url"] = ev.url
-    entry.setdefault("posted_recap", False)
-    if kind == "announce":
-        entry["announced"] = True
+    for flag in ("posted_recap", "member_announced", "member_thanked"):
+        entry.setdefault(flag, False)
+    survey = find_survey_url(ev.description)
+    if survey:
+        entry["survey_url"] = survey
+    if kind in ("announce", "member_announce"):
+        entry["announced" if kind == "announce" else "member_announced"] = True
+        # Announcing inside a reminder window supersedes that reminder.
         entry["reminded_3d"] = entry.get("reminded_3d", False) or now >= _3d_open(ev.start)
         entry["reminded_day_of"] = entry.get("reminded_day_of", False) or now >= _day_of_open(ev.start)
+    elif kind == "member_thanks":
+        entry["member_thanked"] = True
     elif kind == "remind_day_of":
         entry["reminded_day_of"] = True
         entry["reminded_3d"] = True
@@ -450,27 +548,41 @@ def touch_heartbeat(state: dict, now: datetime) -> bool:
 
 # ---------------------------------------------------------------- orchestration
 
-def run(events: list[Event], state_path: Path, now: datetime, poster: Callable[[str], None],
+def run(events: list[Event], state_path: Path, now: datetime, team_poster: Callable[[str], None] | None,
         *, seed: bool = False, dry_run: bool = False,
-        venue_lookup: Callable[[str], str | None] = fetch_venue,
-        mention_role_id: str | None = None, group: str = DEFAULT_GROUP) -> int:
+        venue_lookup: Callable[[str], str | None] | None = None,
+        mention_role_id: str | None = None, group: str = DEFAULT_GROUP,
+        member_poster: Callable[[str], None] | None = None,
+        announce_role_id: str | None = None) -> int:
+    venue_lookup = venue_lookup or fetch_venue
     state = load_state(state_path)
-    mention = role_mention(mention_role_id)
+    team_mention = role_mention(mention_role_id)
+    member_mention = role_mention(announce_role_id)
     feed_ids = {ev.id for ev in events}
 
-    # Backfill fields for entries written by older versions (url, posted_recap).
+    # Backfill fields for entries written by older versions. Member-facing flags default to
+    # "already done" so members are not retro-announced or thanked for old events.
+    for event_id, entry in state.items():
+        if not event_id.startswith("_") and isinstance(entry, dict):
+            entry.setdefault("posted_recap", False)
+            entry.setdefault("member_announced", True)
+            entry.setdefault("member_thanked", True)
     for ev in events:
         entry = state.get(ev.id)
         if isinstance(entry, dict):
             entry.setdefault("url", ev.url)
-            entry.setdefault("posted_recap", False)
+            survey = find_survey_url(ev.description)   # organisers may add it after publishing
+            if survey:
+                entry["survey_url"] = survey
 
     if seed:
         for ev in events:
             if ev.id not in state:
-                state[ev.id] = {"announced": True, "reminded_3d": False, "reminded_day_of": False,
-                                "posted_recap": False, "title": ev.title,
-                                "start": ev.start.isoformat(), "url": ev.url}
+                state[ev.id] = {"announced": True, "member_announced": True,
+                                "reminded_3d": False, "reminded_day_of": False,
+                                "posted_recap": False, "member_thanked": False,
+                                "title": ev.title, "start": ev.start.isoformat(), "url": ev.url,
+                                **({"survey_url": s} if (s := find_survey_url(ev.description)) else {})}
         touch_heartbeat(state, now)
         if not dry_run:
             save_state(state_path, state)
@@ -479,15 +591,33 @@ def run(events: list[Event], state_path: Path, now: datetime, poster: Callable[[
 
     actions = decide_actions(events, state, now, group)
     failed = 0
+    locations: dict[str, str | None] = {}
     for ev, kind in actions:
-        if kind == "post_event":
-            content = format_recap(ev, mention)
+        to_members = kind in MEMBER_KINDS
+        poster = member_poster if to_members else team_poster
+        channel = "#announcements" if to_members else "E-board"
+        if poster is None and not dry_run:
+            var = "DISCORD_ANNOUNCE_WEBHOOK_URL" if to_members else "DISCORD_WEBHOOK_URL"
+            print(f"warn: skipping {kind} for {ev.id}: {var} is not set", file=sys.stderr)
+            continue
+        if kind in ("post_event", "member_thanks"):
+            location = None
+        elif ev.id in locations:
+            location = locations[ev.id]
         else:
-            location = resolve_location(ev, venue_lookup)
-            content = format_announcement(ev, location, mention) if kind == "announce" \
-                else format_reminder(ev, kind, location, mention)
+            location = locations[ev.id] = resolve_location(ev, venue_lookup)
+        if kind == "announce":
+            content = format_announcement(ev, location, team_mention)
+        elif kind == "member_announce":
+            content = format_member_announcement(ev, location, blurb(ev.description), member_mention)
+        elif kind in ("remind_3d", "remind_day_of"):
+            content = format_member_reminder(ev, kind, location, member_mention)
+        elif kind == "post_event":
+            content = format_recap(ev, team_mention)
+        else:
+            content = format_member_thanks(ev, ev.survey_url, member_mention)
         if dry_run:
-            print(f"--- would post [{kind}] for {ev.id} ({len(content)} chars) ---\n{content}\n")
+            print(f"--- would post [{kind} → {channel}] for {ev.id} ({len(content)} chars) ---\n{content}\n")
             continue
         try:
             poster(content)
@@ -497,7 +627,7 @@ def run(events: list[Event], state_path: Path, now: datetime, poster: Callable[[
             continue
         apply_action(state, ev, kind, now)
         save_state(state_path, state)
-        print(f"posted {kind} for {ev.id}: {ev.title}")
+        print(f"posted {kind} → {channel} for {ev.id}: {ev.title}")
 
     if dry_run:
         if not actions:
@@ -532,26 +662,34 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--now", help="override the clock (ISO 8601, naive = America/New_York)")
     ap.add_argument("--group", default=os.environ.get("MEETUP_GROUP", DEFAULT_GROUP))
     ap.add_argument("--mention-role", default=os.environ.get("DISCORD_MENTION_ROLE_ID", ""),
-                    help="Discord role ID to @mention at the top of every post")
+                    help="role ID to @mention at the end of E-board posts")
+    ap.add_argument("--announce-role", default=os.environ.get("DISCORD_ANNOUNCE_ROLE_ID", ""),
+                    help="role ID to @mention at the end of #announcements posts")
+    ap.add_argument("--feed", help="iCal URL or local .ics file (default: the group's feed)")
     args = ap.parse_args(argv)
 
     webhook = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+    announce_hook = os.environ.get("DISCORD_ANNOUNCE_WEBHOOK_URL", "").strip()
     if not webhook and not (args.dry_run or args.seed):
         print("error: DISCORD_WEBHOOK_URL is not set (use --dry-run to test without it)", file=sys.stderr)
         return 2
 
     try:
-        events = parse_ical(fetch(feed_url(args.group)))
+        events = load_feed(args.feed or feed_url(args.group))
     except (URLError, HTTPError, OSError, ValueError) as exc:
         print(f"error: could not fetch/parse the Meetup iCal feed: {exc}", file=sys.stderr)
         return 1
     print(f"feed: {len(events)} event(s) for {args.group}")
 
     role_id = args.mention_role.strip() or None
-    poster = (lambda content: post_discord(webhook, content, role_id=role_id)) if webhook \
+    announce_role = args.announce_role.strip() or None
+    team_poster = (lambda content: post_discord(webhook, content, role_id=role_id)) if webhook \
         else (lambda c: None)
-    return run(events, Path(args.state), parse_now(args.now), poster,
-               seed=args.seed, dry_run=args.dry_run, mention_role_id=role_id, group=args.group)
+    member_poster = (lambda content: post_discord(announce_hook, content, role_id=announce_role)) \
+        if announce_hook else None
+    return run(events, Path(args.state), parse_now(args.now), team_poster,
+               seed=args.seed, dry_run=args.dry_run, mention_role_id=role_id, group=args.group,
+               member_poster=member_poster, announce_role_id=announce_role)
 
 
 if __name__ == "__main__":

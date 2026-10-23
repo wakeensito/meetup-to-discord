@@ -74,6 +74,58 @@ class ParseIcalTests(unittest.TestCase):
         self.assertEqual(m.parse_ical(ics)[0].id, "987")
 
 
+class BlurbTests(unittest.TestCase):
+    def test_real_feed_blurb_skips_group_name_line_and_bold(self):
+        text = m.blurb(m.parse_ical(ICS)[0].description)
+        self.assertTrue(text.startswith("Join the AWS Student Builder Group"), text)
+        self.assertTrue(text.endswith("tech job market."), text)
+        self.assertNotIn("**", text)
+        self.assertNotIn("AWS SBG at Florida", text)
+
+    def test_blurb_skips_a_leading_room_paragraph(self):
+        self.assertEqual(m.blurb("**Room: INV1 - 201**\n\nIntro text here."), "Intro text here.")
+
+    def test_blurb_caps_at_a_word_boundary(self):
+        text = m.blurb("word " * 100)
+        self.assertLessEqual(len(text), 301)
+        self.assertTrue(text.endswith("…"))
+        self.assertNotIn(" …", text)
+
+    def test_blurb_none_when_empty(self):
+        self.assertIsNone(m.blurb(""))
+        self.assertIsNone(m.blurb("**Room: X**"))
+
+
+class SurveyTests(unittest.TestCase):
+    def test_finds_google_form_link(self):
+        d = "Thanks!\n\nFeedback: https://forms.gle/AbC123xyz please."
+        self.assertEqual(m.find_survey_url(d), "https://forms.gle/AbC123xyz")
+
+    def test_finds_other_survey_hosts(self):
+        for u in ("https://docs.google.com/forms/d/e/1FA/viewform", "https://forms.office.com/r/x1",
+                  "https://sbg.typeform.com/to/abc", "https://www.surveymonkey.com/r/XYZ"):
+            self.assertEqual(m.find_survey_url(f"see {u} now"), u)
+
+    def test_ignores_non_survey_links(self):
+        self.assertIsNone(m.find_survey_url(f"RSVP {EVENT_URL} and github.com/x"))
+        self.assertIsNone(m.find_survey_url(""))
+
+    def test_member_thanks_with_survey_link(self):
+        text = m.format_member_thanks(sample_event(), "https://forms.gle/AbC", mention="<@&7>")
+        self.assertEqual(text, (
+            "🙌 **Thank you for coming to AWS Certifications & Career Success Workshop!**\n\n"
+            "We'd love your feedback. It takes a minute and shapes the next one.\n"
+            "📝 Feedback survey: https://forms.gle/AbC\n\n"
+            f"🔗 Event page: {EVENT_URL}\n\n"
+            "<@&7>"))
+
+    def test_member_thanks_points_to_meetup_when_no_survey_link(self):
+        text = m.format_member_thanks(sample_event(), None)
+        self.assertIn("📝 Feedback survey: on the Meetup event page below\n", text)
+        self.assertTrue(text.endswith(f"🔗 Event page: {EVENT_URL}"))
+        self.assertNotIn("None", text)
+
+
 class LocationTests(unittest.TestCase):
     def test_extract_room_from_description(self):
         self.assertEqual(m.extract_room("x\n**Room: INV1 - 201**\ny"), "INV1 - 201")
@@ -104,7 +156,8 @@ class FormatTests(unittest.TestCase):
         self.assertIn("📅 Thursday, October 22 · 3:00 PM–5:00 PM ET\n", text)
         self.assertIn("📍 FIU · Room: INV1 - 201\n", text)
         self.assertIn(f"🔗 {EVENT_URL}\n", text)
-        self.assertIn("**Marketing & Outreach:**\n- [ ] Discord — 3 posts", text)
+        self.assertIn("**Marketing & Outreach:**\n- ✅ Discord — automated", text)
+        self.assertNotIn("- [ ] Discord", text)
         self.assertIn("**Tabling & Promotion:**", text)
         self.assertIn("**Technical Prep (Workshop Leads):**", text)
         self.assertTrue(text.endswith("Claim an item by replying with the task + your name!"))
@@ -164,7 +217,8 @@ class FormatTests(unittest.TestCase):
         self.assertTrue(text.startswith(
             "✅ **AWS Certifications & Career Success Workshop is a wrap! Post-event checklist**\n"))
         self.assertIn(f"🔗 {EVENT_URL}\n", text)
-        self.assertIn("**Within 24 hours:**\n- [ ] Discord — thank-you announcement", text)
+        self.assertIn("**Within 24 hours:**\n- ✅ Discord — automated", text)
+        self.assertNotIn("- [ ] Discord", text)
         self.assertNotIn("Meetup —", text)  # survey link lives on the Meetup event page
         self.assertIn("- [ ] Photos —", text)
         self.assertIn("- [ ] Slides — post the workshop PowerPoint", text)
@@ -175,6 +229,49 @@ class FormatTests(unittest.TestCase):
         self.assertTrue(text.endswith("Claim an item by replying with the task + your name! <@&42>"))
         self.assertLessEqual(len(text), 2000)
         self.assertNotIn("None", text)
+
+    def test_member_announcement_matches_template(self):
+        text = m.format_member_announcement(sample_event(), "FIU · Room: INV1 - 201",
+                                            "Join us for a workshop.", mention="<@&7>")
+        self.assertEqual(text, (
+            "📣 **New event: AWS Certifications & Career Success Workshop**\n\n"
+            "📅 Thursday, October 22\n"
+            "🕒 3:00 PM–5:00 PM ET\n"
+            "📍 FIU · Room: INV1 - 201\n\n"
+            "Join us for a workshop.\n\n"
+            f"🔗 RSVP on Meetup: {EVENT_URL}\n\n"
+            "<@&7>"))
+
+    def test_member_announcement_drops_missing_parts(self):
+        text = m.format_member_announcement(sample_event(end=None), None, None)
+        self.assertIn("🕒 3:00 PM ET\n", text)
+        self.assertNotIn("📍", text)
+        self.assertNotIn("\n\n\n", text)
+        self.assertNotIn("None", text)
+        self.assertTrue(text.endswith(f"🔗 RSVP on Meetup: {EVENT_URL}"))
+
+    def test_member_3d_reminder_matches_template(self):
+        text = m.format_member_reminder(sample_event(), "remind_3d", "FIU", mention="<@&7>")
+        self.assertEqual(text, (
+            "⏰ **Coming up Thursday: AWS Certifications & Career Success Workshop**\n\n"
+            "📅 Thursday, October 22\n"
+            "🕒 3:00 PM–5:00 PM ET\n"
+            "📍 FIU\n\n"
+            f"Haven't RSVP'd yet? 🔗 {EVENT_URL}\n\n"
+            "<@&7>"))
+
+    def test_member_day_of_reminder_matches_template(self):
+        text = m.format_member_reminder(sample_event(), "remind_day_of", None)
+        self.assertEqual(text, (
+            "🚀 **Today: AWS Certifications & Career Success Workshop**\n\n"
+            "🕒 3:00 PM–5:00 PM ET\n\n"
+            f"See you there! 🔗 {EVENT_URL}"))
+
+    def test_no_pointing_emoji_anywhere(self):
+        for text in (m.format_member_announcement(sample_event(), "x", "b"),
+                     m.format_member_reminder(sample_event(), "remind_3d", "x"),
+                     m.format_member_reminder(sample_event(), "remind_day_of", "x")):
+            self.assertNotIn("👉", text)
 
     def test_reminder_without_location_has_no_pin_line(self):
         text = m.format_reminder(sample_event(), "remind_day_of", None)
@@ -189,6 +286,7 @@ def announced(**over):
         "announced": True,
         "reminded_3d": False,
         "reminded_day_of": False,
+        "member_announced": True,
     }
     entry.update(over)
     return {"316843450": entry}
@@ -200,8 +298,14 @@ class DecideActionsTests(unittest.TestCase):
     def kinds(self, state, now):
         return [k for _, k in m.decide_actions([self.ev], state, now)]
 
-    def test_unknown_event_is_announced(self):
-        self.assertEqual(self.kinds({}, et(2026, 10, 17, 12)), ["announce"])
+    def test_unknown_event_is_announced_to_both_audiences(self):
+        self.assertEqual(self.kinds({}, et(2026, 10, 17, 12)), ["announce", "member_announce"])
+
+    def test_member_announce_is_independent_of_team_announce(self):
+        self.assertEqual(self.kinds(announced(member_announced=False), et(2026, 10, 17, 12)),
+                         ["member_announce"])
+        self.assertEqual(self.kinds({"316843450": {**announced()["316843450"], "announced": False}},
+                                    et(2026, 10, 17, 12)), ["announce"])
 
     def test_known_event_outside_windows_does_nothing(self):
         self.assertEqual(self.kinds(announced(), et(2026, 10, 17, 12)), [])
@@ -238,7 +342,8 @@ class RecapDecisionTests(unittest.TestCase):
     """After the event, Meetup drops it from the feed; the recap must come from saved state."""
 
     def state(self, **over):
-        st = announced(reminded_3d=True, reminded_day_of=True, posted_recap=False, url=EVENT_URL)
+        st = announced(reminded_3d=True, reminded_day_of=True, posted_recap=False, url=EVENT_URL,
+                       member_thanked=True)
         st["316843450"].update(over)
         return st
 
@@ -253,6 +358,20 @@ class RecapDecisionTests(unittest.TestCase):
     def test_recap_window_closes_7_days_after_start(self):
         self.assertEqual(self.kinds(self.state(), et(2026, 10, 29, 14, 59)), ["post_event"])
         self.assertEqual(self.kinds(self.state(), et(2026, 10, 29, 15, 0)), [])
+
+    def test_member_thanks_fires_in_the_same_window_as_the_recap(self):
+        st = self.state(member_thanked=False)
+        self.assertEqual(self.kinds(st, et(2026, 10, 23, 7, 59)), [])
+        self.assertEqual(self.kinds(st, et(2026, 10, 23, 8, 0)), ["post_event", "member_thanks"])
+        self.assertEqual(self.kinds(self.state(posted_recap=True, member_thanked=False),
+                                    et(2026, 10, 23, 9)), ["member_thanks"])
+        self.assertEqual(self.kinds(st, et(2026, 10, 29, 15, 0)), [])
+
+    def test_member_thanks_event_carries_saved_survey_url(self):
+        st = self.state(member_thanked=False, posted_recap=True, survey_url="https://forms.gle/Q")
+        (ev, kind), = m.decide_actions([], st, et(2026, 10, 23, 9))
+        self.assertEqual(kind, "member_thanks")
+        self.assertEqual(ev.survey_url, "https://forms.gle/Q")
 
     def test_recap_not_repeated(self):
         self.assertEqual(self.kinds(self.state(posted_recap=True), et(2026, 10, 23, 9)), [])
@@ -310,6 +429,32 @@ class ApplyActionTests(unittest.TestCase):
         m.apply_action(st, self.ev, "announce", et(2026, 10, 17, 12))
         self.assertEqual(st["316843450"]["url"], EVENT_URL)
         self.assertFalse(st["316843450"]["posted_recap"])
+
+    def test_member_announce_marks_flag_and_premarks_open_windows(self):
+        st = {}
+        m.apply_action(st, self.ev, "member_announce", et(2026, 10, 20, 12))
+        e = st["316843450"]
+        self.assertTrue(e["member_announced"])
+        self.assertFalse(e.get("announced", False))
+        self.assertTrue(e["reminded_3d"])
+        self.assertFalse(e["reminded_day_of"])
+
+    def test_announce_leaves_member_flag_pending(self):
+        st = {}
+        m.apply_action(st, self.ev, "announce", et(2026, 10, 17, 12))
+        self.assertFalse(st["316843450"]["member_announced"])
+
+    def test_member_thanks_marks_flag(self):
+        st = announced(url=EVENT_URL, member_thanked=False)
+        m.apply_action(st, self.ev, "member_thanks", et(2026, 10, 23, 9))
+        self.assertTrue(st["316843450"]["member_thanked"])
+
+    def test_announce_saves_survey_url_from_description(self):
+        st = {}
+        ev = sample_event(description="Intro\n\nFeedback: https://forms.gle/AbC")
+        m.apply_action(st, ev, "announce", et(2026, 10, 17, 12))
+        self.assertEqual(st["316843450"]["survey_url"], "https://forms.gle/AbC")
+        self.assertFalse(st["316843450"]["member_thanked"])
 
     def test_post_event_marks_recap_done(self):
         st = announced(url=EVENT_URL, posted_recap=False)
@@ -388,7 +533,8 @@ class RunFlowTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.state_path = Path(self.tmp.name) / "seen_events.json"
-        self.posted = []
+        self.posted = []          # E-board channel
+        self.member_posted = []   # #announcements
         self.events = m.parse_ical(ICS)
         self._quiet = mock.patch.object(sys, "stdout", io.StringIO())
         self._quiet.start()
@@ -400,8 +546,12 @@ class RunFlowTests(unittest.TestCase):
     def poster(self, content):
         self.posted.append(content)
 
+    def member_poster(self, content):
+        self.member_posted.append(content)
+
     def go(self, now=et(2026, 10, 17, 12), **kw):
         kw.setdefault("venue_lookup", lambda url: "FIU")
+        kw.setdefault("member_poster", self.member_poster)
         return m.run(self.events, self.state_path, now, self.poster, **kw)
 
     def test_seed_writes_state_and_posts_nothing(self):
@@ -409,6 +559,7 @@ class RunFlowTests(unittest.TestCase):
         self.assertEqual(self.posted, [])
         st = json.loads(self.state_path.read_text())
         self.assertTrue(st["316843450"]["announced"])
+        self.assertTrue(st["316843450"]["member_announced"])  # never retro-announce to members
         self.assertFalse(st["316843450"]["reminded_3d"])
 
     def test_second_run_posts_nothing(self):
@@ -425,7 +576,13 @@ class RunFlowTests(unittest.TestCase):
         self.assertEqual(len(self.posted), 1)
         self.assertIn("📣 **New event is up on Meetup!**", self.posted[0])
         self.assertIn("📍 FIU · Room: INV1 - 201", self.posted[0])
-        self.assertTrue(json.loads(self.state_path.read_text())["316843450"]["announced"])
+        self.assertEqual(len(self.member_posted), 1)
+        self.assertIn("📣 **New event: AWS Certifications", self.member_posted[0])
+        self.assertIn("Join the AWS Student Builder Group", self.member_posted[0])
+        self.assertIn("📍 FIU · Room: INV1 - 201", self.member_posted[0])
+        st = json.loads(self.state_path.read_text())["316843450"]
+        self.assertTrue(st["announced"])
+        self.assertTrue(st["member_announced"])
 
     def test_dry_run_prints_and_writes_nothing(self):
         buf = io.StringIO()
@@ -433,7 +590,11 @@ class RunFlowTests(unittest.TestCase):
             rc = self.go(dry_run=True)
         self.assertEqual(rc, 0)
         self.assertEqual(self.posted, [])
-        self.assertIn("New event is up", buf.getvalue())
+        self.assertEqual(self.member_posted, [])
+        out = buf.getvalue()
+        self.assertIn("[announce → E-board]", out)
+        self.assertIn("[member_announce → #announcements]", out)
+        self.assertIn("New event is up", out)
         self.assertFalse(self.state_path.exists())
 
     def test_post_failure_exits_nonzero_and_does_not_mark_seen(self):
@@ -454,18 +615,21 @@ class RunFlowTests(unittest.TestCase):
             if len(calls) == 2:
                 raise m.PostError("boom")
         rc = m.run(self.events + [ev2], self.state_path, et(2026, 10, 17, 12), flaky,
-                   venue_lookup=lambda u: None)
+                   venue_lookup=lambda u: None, member_poster=self.member_poster)
         self.assertEqual(rc, 1)
         st = json.loads(self.state_path.read_text())
-        self.assertEqual(sorted(k for k in st if not k.startswith("_")), ["316843450"])
+        self.assertTrue(st["316843450"]["announced"])
+        self.assertFalse(st.get("999", {}).get("announced", False))
+        self.assertTrue(st["999"]["member_announced"])  # the other channel still went out
 
     def test_venue_lookup_failure_still_posts_with_room_only(self):
         def boom(url):
             raise RuntimeError("network")
         rc = m.run(self.events, self.state_path, et(2026, 10, 17, 12), self.poster,
-                   venue_lookup=boom)
+                   venue_lookup=boom, member_poster=self.member_poster)
         self.assertEqual(rc, 0)
         self.assertIn("📍 Room: INV1 - 201", self.posted[0])
+        self.assertIn("📍 Room: INV1 - 201", self.member_posted[0])
 
     def test_reminders_fire_once_each_across_runs(self):
         self.go(seed=True)
@@ -473,17 +637,68 @@ class RunFlowTests(unittest.TestCase):
         self.go(now=et(2026, 10, 19, 10, 15))
         self.go(now=et(2026, 10, 22, 8, 5))
         self.go(now=et(2026, 10, 22, 8, 20))
-        self.assertEqual(len(self.posted), 2)
-        self.assertIn("⏰", self.posted[0])
-        self.assertIn("Today", self.posted[1])
+        self.assertEqual(self.posted, [])  # reminders are for members now
+        self.assertEqual(len(self.member_posted), 2)
+        self.assertIn("⏰ **Coming up Thursday", self.member_posted[0])
+        self.assertIn("🚀 **Today", self.member_posted[1])
 
-    def test_run_threads_role_mention_into_every_post(self):
-        self.go(seed=True)
-        self.go(now=et(2026, 10, 19, 10), mention_role_id="42")
-        self.go(now=et(2026, 10, 22, 8, 5), mention_role_id="42")
-        self.assertEqual(len(self.posted), 2)
+    def test_each_channel_gets_its_own_role_mention(self):
+        self.go(mention_role_id="42", announce_role_id="43")
+        self.go(now=et(2026, 10, 19, 10), mention_role_id="42", announce_role_id="43")
+        self.go(now=et(2026, 10, 22, 8, 5), mention_role_id="42", announce_role_id="43")
+        self.go(now=et(2026, 10, 23, 8, 5), mention_role_id="42", announce_role_id="43")
+        self.assertEqual(len(self.posted), 2)        # announce + recap
+        self.assertEqual(len(self.member_posted), 4)  # announce + 3-day + day-of + thank-you
         for text in self.posted:
             self.assertTrue(text.endswith("<@&42>"), text)
+        for text in self.member_posted:
+            self.assertTrue(text.endswith("<@&43>"), text)
+
+    def test_member_posts_skipped_but_unmarked_when_webhook_unconfigured(self):
+        err = io.StringIO()
+        with mock.patch.object(sys, "stderr", err):
+            rc = self.go(member_poster=None)
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(self.posted), 1)
+        self.assertEqual(self.member_posted, [])
+        self.assertIn("DISCORD_ANNOUNCE_WEBHOOK_URL", err.getvalue())
+        self.assertFalse(json.loads(self.state_path.read_text())["316843450"]["member_announced"])
+        self.go()  # now configured: members get the announcement, team is not re-posted
+        self.assertEqual(len(self.posted), 1)
+        self.assertEqual(len(self.member_posted), 1)
+
+    def test_thanks_goes_to_members_and_recap_to_team_the_morning_after(self):
+        self.go()
+        self.events = []
+        self.go(now=et(2026, 10, 23, 8, 5), announce_role_id="43")
+        self.go(now=et(2026, 10, 23, 8, 20), announce_role_id="43")
+        team = [t for t in self.posted if "Post-event checklist" in t]
+        self.assertEqual(len(team), 1)
+        thanks = [t for t in self.member_posted if t.startswith("🙌 **Thank you")]
+        self.assertEqual(len(thanks), 1)
+        self.assertIn("on the Meetup event page below", thanks[0])
+        self.assertTrue(thanks[0].endswith("<@&43>"))
+
+    def test_survey_link_added_to_description_later_is_picked_up_before_thanks(self):
+        self.go()  # announced without a survey link
+        ev = self.events[0]
+        self.events = [m.Event(**{**ev.__dict__, "description": ev.description +
+                                   "\n\nFeedback: https://forms.gle/Late"})]
+        self.go(now=et(2026, 10, 20, 12))  # still in feed, description edited
+        self.events = []
+        self.go(now=et(2026, 10, 23, 8, 5))
+        thanks = [t for t in self.member_posted if t.startswith("🙌")]
+        self.assertIn("📝 Feedback survey: https://forms.gle/Late", thanks[0])
+
+    def test_entries_from_before_member_posts_are_backfilled_as_already_announced(self):
+        st = announced()
+        del st["316843450"]["member_announced"]
+        self.state_path.write_text(json.dumps(st))
+        self.go()
+        self.assertEqual(self.member_posted, [])
+        st = json.loads(self.state_path.read_text())["316843450"]
+        self.assertTrue(st["member_announced"])
+        self.assertTrue(st["member_thanked"])
 
     def test_recap_posts_once_the_morning_after_even_with_empty_feed(self):
         self.go(seed=True)
@@ -495,6 +710,8 @@ class RunFlowTests(unittest.TestCase):
         self.assertEqual(len(self.posted), 1)
         self.assertIn("Post-event checklist", self.posted[0])
         self.assertTrue(self.posted[0].endswith("<@&42>"))
+        self.assertEqual(len(self.member_posted), 1)  # seeded events still get the thank-you
+        self.assertTrue(self.member_posted[0].startswith("🙌"))
 
     def test_url_is_backfilled_for_entries_seeded_before_urls_were_saved(self):
         self.state_path.write_text(json.dumps(announced()))
@@ -512,6 +729,20 @@ class RunFlowTests(unittest.TestCase):
 class CliTests(unittest.TestCase):
     def test_parse_now_accepts_naive_as_et(self):
         self.assertEqual(m.parse_now("2026-10-19T10:00"), et(2026, 10, 19, 10, 0))
+
+    def test_load_feed_reads_a_local_file(self):
+        self.assertEqual(len(m.load_feed(str(FIX / "events.ics"))), 1)
+
+    def test_main_dry_run_with_local_feed_prints_both_channels(self):
+        buf = io.StringIO()
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(sys, "stdout", buf), \
+                mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(m, "fetch_venue", lambda url: None):
+            rc = m.main(["--dry-run", "--feed", str(FIX / "events.ics"),
+                         "--state", f"{d}/s.json", "--now", "2026-10-17T12:00"])
+        self.assertEqual(rc, 0)
+        self.assertIn("[announce → E-board]", buf.getvalue())
+        self.assertIn("[member_announce → #announcements]", buf.getvalue())
 
     def test_main_requires_webhook_unless_dry_run(self):
         with mock.patch.dict(os.environ, {}, clear=True), \

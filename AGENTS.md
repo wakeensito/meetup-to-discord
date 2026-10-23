@@ -1,8 +1,9 @@
 # Agent notes: meetup-to-discord
 
-Single-purpose bot: new Meetup event → one Discord message with a task checklist, then a
-reminder 3 days out, one the morning of, and a post-event checklist the morning after.
-Zero AWS, zero dependencies.
+Single-purpose bot, two audiences. New Meetup event → E-board channel gets a task checklist,
+`#announcements` gets a member announcement. Members then get a 3-day and a day-of reminder.
+The morning after, E-board gets the post-event checklist and members get a thank-you with the
+survey link. Zero AWS, zero dependencies.
 
 ## Resume here
 - Source of truth for behavior: `meetup_to_discord.py` (one file) and `tests/` (unittest, stdlib).
@@ -13,16 +14,22 @@ Zero AWS, zero dependencies.
 - State: `seen_events.json` in the repo root, committed back by `.github/workflows/poll.yml`.
   **Do not enable branch protection on main**; the Actions token cannot push through it. If
   protection is ever wanted, move the state file to an unprotected `state` branch.
-- Reminder windows live in `decide_actions` / `apply_action`. Day-of opens at 8:00 AM ET and takes
-  precedence over a missed 3-day reminder. The post-event recap is driven by **saved state**, not
-  the feed (Meetup drops past events), so `url` and `posted_recap` must be in every entry;
-  `run()` backfills them for older entries.
+- Routing is `MEMBER_KINDS` in `decide_actions` / `run()`: `member_announce`, `remind_3d`,
+  `remind_day_of`, `member_thanks` go to `#announcements`; `announce`, `post_event` to E-board.
+  Each has its own state flag. Windows: day-of opens 8:00 AM ET and beats a missed 3-day;
+  morning-after posts open 8:00 AM ET the next day and close 7 days after start.
+- Morning-after posts are driven by **saved state**, not the feed (Meetup drops past events), so
+  `url`, `survey_url` and the flags must be in every entry. `run()` backfills older entries with
+  member flags set to `True` so members are never retro-announced or thanked.
+- Member templates use blank lines between blocks (`_blocks`). No 👉 emoji; the user vetoed it.
 - A weekly heartbeat commit (`_last_checked`) keeps the repo "active" so GitHub does not disable
   the schedule after 60 days of inactivity.
 
 ## Working rules
 - TDD: every behavior change gets a failing test first. `python3 -m unittest discover -s tests`.
 - Local manual check: `python3 meetup_to_discord.py --dry-run --now 2026-10-19T10:00`.
-- Never commit the webhook URL. It is the `DISCORD_WEBHOOK_URL` Actions secret. The optional
-  role ping is the `DISCORD_MENTION_ROLE_ID` repo *variable*; it is whitelisted in
-  `allowed_mentions.roles`, everything else stays unpingable.
+- Never commit webhook URLs. They are the `DISCORD_WEBHOOK_URL` (E-board) and
+  `DISCORD_ANNOUNCE_WEBHOOK_URL` (#announcements) Actions secrets. Role pings are the
+  `DISCORD_MENTION_ROLE_ID` / `DISCORD_ANNOUNCE_ROLE_ID` repo *variables*; each is whitelisted in
+  `allowed_mentions.roles` for its own channel, everything else stays unpingable.
+- Preview without upcoming events: `--feed tests/fixtures/events.ics --state /tmp/s.json`.

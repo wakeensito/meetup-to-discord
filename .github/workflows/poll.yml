@@ -35,6 +35,8 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_MENTION_ROLE_ID: ${{ vars.DISCORD_MENTION_ROLE_ID }}
+          DISCORD_ANNOUNCE_WEBHOOK_URL: ${{ secrets.DISCORD_ANNOUNCE_WEBHOOK_URL }}
+          DISCORD_ANNOUNCE_ROLE_ID: ${{ vars.DISCORD_ANNOUNCE_ROLE_ID }}
         run: |
           flags=""
           [ "${{ inputs.seed }}" = "true" ] && flags="$flags --seed"
