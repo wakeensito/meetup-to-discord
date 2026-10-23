@@ -365,10 +365,10 @@ def format_member_reminder(ev: Event, kind: str, location: str | None,
 def format_member_thanks(ev: Event, survey_url: str | None, mention: str | None = None) -> str:
     ask = "We'd love your feedback. It takes a minute and shapes the next one."
     if survey_url:
-        how, link = f"Feedback survey: {survey_url}", f"🔗 Event page: {ev.url}"
+        how, link = f"Feedback survey: {survey_url}", f"Event page: {ev.url}"
     else:
         # Meetup's /feedback/ page is organizer-only; members use the Feedback button on the event page.
-        how, link = "Open the event page and tap **Feedback** to leave your review:", f"🔗 {ev.url}"
+        how, link = "Open the event page and tap **Feedback** to leave your review:", ev.url
     return _blocks(f"**Thank you for coming to {ev.title}!**", ask, how, link, mention)
 
 

@@ -116,7 +116,7 @@ class SurveyTests(unittest.TestCase):
             "**Thank you for coming to AWS Certifications & Career Success Workshop!**\n\n"
             "We'd love your feedback. It takes a minute and shapes the next one.\n\n"
             "Feedback survey: https://forms.gle/AbC\n\n"
-            f"🔗 Event page: {EVENT_URL}\n\n"
+            f"Event page: {EVENT_URL}\n\n"
             "<@&7>"))
 
     def test_member_thanks_points_to_meetup_when_no_survey_link(self):
@@ -125,7 +125,8 @@ class SurveyTests(unittest.TestCase):
             "**Thank you for coming to AWS Certifications & Career Success Workshop!**\n\n"
             "We'd love your feedback. It takes a minute and shapes the next one.\n\n"
             "Open the event page and tap **Feedback** to leave your review:\n\n"
-            f"🔗 {EVENT_URL}"))
+            f"{EVENT_URL}"))
+        self.assertNotIn("🔗", text)
         self.assertNotIn("/feedback/", text)
 
 
