@@ -1,7 +1,7 @@
 {
   "316843450": {
     "announced": true,
-    "posted_recap": false,
+    "posted_recap": true,
     "reminded_3d": true,
     "reminded_day_of": true,
     "start": "2026-10-22T15:00:00-04:00",
