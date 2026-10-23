@@ -115,7 +115,7 @@ class SurveyTests(unittest.TestCase):
         self.assertEqual(text, (
             "**Thank you for coming to AWS Certifications & Career Success Workshop!**\n\n"
             "We'd love your feedback. It takes a minute and shapes the next one.\n\n"
-            "📝 Feedback survey: https://forms.gle/AbC\n\n"
+            "Feedback survey: https://forms.gle/AbC\n\n"
             f"🔗 Event page: {EVENT_URL}\n\n"
             "<@&7>"))
 
@@ -124,7 +124,7 @@ class SurveyTests(unittest.TestCase):
         self.assertEqual(text, (
             "**Thank you for coming to AWS Certifications & Career Success Workshop!**\n\n"
             "We'd love your feedback. It takes a minute and shapes the next one.\n\n"
-            "📝 Open the event page and tap **Feedback** to leave your review:\n\n"
+            "Open the event page and tap **Feedback** to leave your review:\n\n"
             f"🔗 {EVENT_URL}"))
         self.assertNotIn("/feedback/", text)
 
@@ -692,7 +692,7 @@ class RunFlowTests(unittest.TestCase):
         self.events = []
         self.go(now=et(2026, 10, 23, 8, 5))
         thanks = [t for t in self.member_posted if t.startswith("**Thank you")]
-        self.assertIn("📝 Feedback survey: https://forms.gle/Late", thanks[0])
+        self.assertIn("Feedback survey: https://forms.gle/Late", thanks[0])
 
     def test_entries_from_before_member_posts_are_backfilled_as_already_announced(self):
         st = announced()
