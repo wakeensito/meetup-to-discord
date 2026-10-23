@@ -117,10 +117,6 @@ def event_url(group: str, event_id: str) -> str:
     return f"https://www.meetup.com/{group}/events/{event_id}/"
 
 
-def meetup_feedback_url(ev_url: str) -> str:
-    """Meetup's built-in post-event feedback page for attendees."""
-    return ev_url.rstrip("/") + "/feedback/"
-
 
 # ---------------------------------------------------------------- iCal parsing
 
@@ -367,11 +363,15 @@ def format_member_reminder(ev: Event, kind: str, location: str | None,
 
 
 def format_member_thanks(ev: Event, survey_url: str | None, mention: str | None = None) -> str:
-    survey = survey_url or meetup_feedback_url(ev.url)
-    return _blocks(f"🙌 **Thank you for coming to {ev.title}!**",
-                   "We'd love your feedback. It takes a minute and shapes the next one.\n"
-                   f"📝 Feedback survey: {survey}",
-                   f"🔗 Event page: {ev.url}", mention)
+    ask = "We'd love your feedback. It takes a minute and shapes the next one."
+    if survey_url:
+        body = f"{ask}\n📝 Feedback survey: {survey_url}"
+        link = f"🔗 Event page: {ev.url}"
+    else:
+        # Meetup's /feedback/ page is organizer-only; members use the Feedback button on the event page.
+        body = f"{ask}\n📝 Open the event page and tap **Feedback** to leave your review:\n🔗 {ev.url}"
+        link = None
+    return _blocks(f"🙌 **Thank you for coming to {ev.title}!**", body, link, mention)
 
 
 def format_recap(ev: Event, mention: str | None = None) -> str:

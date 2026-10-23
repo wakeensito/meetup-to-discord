@@ -121,13 +121,12 @@ class SurveyTests(unittest.TestCase):
 
     def test_member_thanks_points_to_meetup_when_no_survey_link(self):
         text = m.format_member_thanks(sample_event(), None)
-        self.assertIn(f"📝 Feedback survey: {EVENT_URL}feedback/\n", text)
-        self.assertTrue(text.endswith(f"🔗 Event page: {EVENT_URL}"))
-        self.assertNotIn("None", text)
-
-    def test_feedback_url_helper(self):
-        self.assertEqual(m.meetup_feedback_url(EVENT_URL), f"{EVENT_URL}feedback/")
-        self.assertEqual(m.meetup_feedback_url(EVENT_URL.rstrip("/")), f"{EVENT_URL}feedback/")
+        self.assertEqual(text, (
+            "🙌 **Thank you for coming to AWS Certifications & Career Success Workshop!**\n\n"
+            "We'd love your feedback. It takes a minute and shapes the next one.\n"
+            "📝 Open the event page and tap **Feedback** to leave your review:\n"
+            f"🔗 {EVENT_URL}"))
+        self.assertNotIn("/feedback/", text)
 
 
 class LocationTests(unittest.TestCase):
@@ -680,7 +679,8 @@ class RunFlowTests(unittest.TestCase):
         self.assertEqual(len(team), 1)
         thanks = [t for t in self.member_posted if t.startswith("🙌 **Thank you")]
         self.assertEqual(len(thanks), 1)
-        self.assertIn(f"📝 Feedback survey: {EVENT_URL}feedback/", thanks[0])
+        self.assertIn("tap **Feedback** to leave your review", thanks[0])
+        self.assertNotIn("/feedback/", thanks[0])
         self.assertTrue(thanks[0].endswith("<@&43>"))
 
     def test_survey_link_added_to_description_later_is_picked_up_before_thanks(self):

@@ -187,8 +187,8 @@ Each event in `seen_events.json` carries one flag per post:
 - **Survey link.** If the Meetup description contains a Google Forms, Microsoft Forms, Typeform,
   SurveyMonkey, Qualtrics, Airtable, Tally or Jotform link, the thank-you links it directly. Add
   it to the description any time before the morning after; the bot re-reads it every poll.
-  Otherwise the thank-you links Meetup's built-in feedback page for the event
-  (`…/events/<id>/feedback/`), which attendees see when logged in.
+  Otherwise the thank-you links the event page and tells members to tap **Feedback** there
+  (Meetup's `…/feedback/` URL is organizer-only, so it is never linked).
 - **Member blurb.** The announcement quotes the first paragraph of the Meetup description
   (bold stripped, about 300 characters). Keep the opening paragraph punchy.
 - An event announced inside a window does not also get that window's reminder on the same run.
