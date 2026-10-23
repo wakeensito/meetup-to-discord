@@ -117,6 +117,11 @@ def event_url(group: str, event_id: str) -> str:
     return f"https://www.meetup.com/{group}/events/{event_id}/"
 
 
+def meetup_feedback_url(ev_url: str) -> str:
+    """Meetup's built-in post-event feedback page for attendees."""
+    return ev_url.rstrip("/") + "/feedback/"
+
+
 # ---------------------------------------------------------------- iCal parsing
 
 def _unfold(text: str) -> list[str]:
@@ -362,7 +367,7 @@ def format_member_reminder(ev: Event, kind: str, location: str | None,
 
 
 def format_member_thanks(ev: Event, survey_url: str | None, mention: str | None = None) -> str:
-    survey = survey_url or "on the Meetup event page below"
+    survey = survey_url or meetup_feedback_url(ev.url)
     return _blocks(f"🙌 **Thank you for coming to {ev.title}!**",
                    "We'd love your feedback. It takes a minute and shapes the next one.\n"
                    f"📝 Feedback survey: {survey}",
