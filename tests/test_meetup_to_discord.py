@@ -114,7 +114,7 @@ class SurveyTests(unittest.TestCase):
         text = m.format_member_thanks(sample_event(), "https://forms.gle/AbC", mention="<@&7>")
         self.assertEqual(text, (
             "🙌 **Thank you for coming to AWS Certifications & Career Success Workshop!**\n\n"
-            "We'd love your feedback. It takes a minute and shapes the next one.\n"
+            "We'd love your feedback. It takes a minute and shapes the next one.\n\n"
             "📝 Feedback survey: https://forms.gle/AbC\n\n"
             f"🔗 Event page: {EVENT_URL}\n\n"
             "<@&7>"))
@@ -123,8 +123,8 @@ class SurveyTests(unittest.TestCase):
         text = m.format_member_thanks(sample_event(), None)
         self.assertEqual(text, (
             "🙌 **Thank you for coming to AWS Certifications & Career Success Workshop!**\n\n"
-            "We'd love your feedback. It takes a minute and shapes the next one.\n"
-            "📝 Open the event page and tap **Feedback** to leave your review:\n"
+            "We'd love your feedback. It takes a minute and shapes the next one.\n\n"
+            "📝 Open the event page and tap **Feedback** to leave your review:\n\n"
             f"🔗 {EVENT_URL}"))
         self.assertNotIn("/feedback/", text)
 
