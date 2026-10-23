@@ -744,6 +744,19 @@ class CliTests(unittest.TestCase):
         self.assertIn("[announce → E-board]", buf.getvalue())
         self.assertIn("[member_announce → #announcements]", buf.getvalue())
 
+    def test_main_runs_with_only_the_members_webhook(self):
+        posted = []
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.dict(os.environ, {"DISCORD_ANNOUNCE_WEBHOOK_URL": "https://hook/m"}, clear=True), \
+                mock.patch.object(m, "post_discord", lambda hook, c, role_id=None: posted.append((hook, c))), \
+                mock.patch.object(m, "fetch_venue", lambda url: None), \
+                mock.patch.object(sys, "stdout", io.StringIO()), mock.patch.object(sys, "stderr", io.StringIO()):
+            rc = m.main(["--feed", str(FIX / "events.ics"), "--state", f"{d}/s.json",
+                         "--now", "2026-10-17T12:00"])
+        self.assertEqual(rc, 0)
+        self.assertEqual([h for h, _ in posted], ["https://hook/m"])
+        self.assertIn("New event:", posted[0][1])
+
     def test_main_requires_webhook_unless_dry_run(self):
         with mock.patch.dict(os.environ, {}, clear=True), \
                 mock.patch.object(sys, "stderr", io.StringIO()):

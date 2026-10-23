@@ -670,8 +670,9 @@ def main(argv: list[str] | None = None) -> int:
 
     webhook = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
     announce_hook = os.environ.get("DISCORD_ANNOUNCE_WEBHOOK_URL", "").strip()
-    if not webhook and not (args.dry_run or args.seed):
-        print("error: DISCORD_WEBHOOK_URL is not set (use --dry-run to test without it)", file=sys.stderr)
+    if not (webhook or announce_hook) and not (args.dry_run or args.seed):
+        print("error: neither DISCORD_WEBHOOK_URL nor DISCORD_ANNOUNCE_WEBHOOK_URL is set "
+              "(use --dry-run to test without them)", file=sys.stderr)
         return 2
 
     try:
@@ -684,7 +685,7 @@ def main(argv: list[str] | None = None) -> int:
     role_id = args.mention_role.strip() or None
     announce_role = args.announce_role.strip() or None
     team_poster = (lambda content: post_discord(webhook, content, role_id=role_id)) if webhook \
-        else (lambda c: None)
+        else ((lambda c: None) if (args.dry_run or args.seed) else None)
     member_poster = (lambda content: post_discord(announce_hook, content, role_id=announce_role)) \
         if announce_hook else None
     return run(events, Path(args.state), parse_now(args.now), team_poster,
