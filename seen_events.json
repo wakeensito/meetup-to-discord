@@ -16,7 +16,7 @@
     "member_thanked": false,
     "posted_recap": false,
     "reminded_3d": true,
-    "reminded_day_of": false,
+    "reminded_day_of": true,
     "start": "2026-11-03T15:00:00-05:00",
     "title": "Agentic AI on AWS",
     "url": "https://www.meetup.com/aws-sbg-at-florida-international-university/events/317136678/"
