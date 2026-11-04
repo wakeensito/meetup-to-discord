@@ -13,8 +13,8 @@
   "317136678": {
     "announced": true,
     "member_announced": true,
-    "member_thanked": false,
-    "posted_recap": false,
+    "member_thanked": true,
+    "posted_recap": true,
     "reminded_3d": true,
     "reminded_day_of": true,
     "start": "2026-11-03T15:00:00-05:00",
