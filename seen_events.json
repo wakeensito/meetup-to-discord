@@ -37,7 +37,7 @@
     "member_announced": true,
     "member_thanked": false,
     "posted_recap": false,
-    "reminded_3d": false,
+    "reminded_3d": true,
     "reminded_day_of": false,
     "start": "2026-11-17T15:15:00-05:00",
     "title": "AWS GameDay",
